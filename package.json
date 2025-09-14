@@ -1,0 +1,40 @@
+{
+  "name": "@arya-rag/monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ARYA RAG - Large Document Collections Q&A System",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "lerna run build",
+    "dev": "lerna run dev --parallel",
+    "clean": "lerna run clean",
+    "lint": "lerna run lint",
+    "test": "lerna run test",
+    "bootstrap": "lerna bootstrap",
+    "type-check": "lerna run type-check"
+  },
+  "devDependencies": {
+    "@types/pdf-parse": "^1.1.5",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.45.0",
+    "eslint-plugin-react": "^7.33.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "lerna": "^7.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "rag",
+    "document-qa",
+    "vector-search",
+    "chatbot",
+    "ai",
+    "react",
+    "large-documents"
+  ],
+  "author": "ARYA RAG Team",
+  "license": "MIT"
+}

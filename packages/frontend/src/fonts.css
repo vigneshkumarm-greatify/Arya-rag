@@ -1,0 +1,41 @@
+@font-face {
+  font-family: 'Yellix';
+  font-weight: 100;
+  src: url('/fonts/Yellix/Yellix-Thin.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Yellix';
+  font-weight: 400;
+  src: url('/fonts/Yellix/Yellix-Regular.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Yellix';
+  font-weight: 500;
+  src: url('/fonts/Yellix/Yellix-Medium.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Yellix';
+  font-weight: 600;
+  src: url('/fonts/Yellix/Yellix-SemiBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Yellix';
+  font-weight: 700;
+  src: url('/fonts/Yellix/Yellix-Bold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Yellix';
+  font-weight: 800;
+  src: url('/fonts/Yellix/Yellix-ExtraBold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Yellix';
+  font-weight: 900;
+  src: url('/fonts/Yellix/Yellix-Black.ttf') format('truetype');
+}
