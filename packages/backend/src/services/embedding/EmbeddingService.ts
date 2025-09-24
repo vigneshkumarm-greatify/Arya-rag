@@ -245,18 +245,46 @@ export const EMBEDDING_CONFIGS: Record<EmbeddingProvider, Partial<EmbeddingServi
 };
 
 /**
- * Common embedding models and their dimensions
+ * Default dimensions for embedding models.
+ * Can be overridden by EMBEDDING_DIMENSIONS environment variable.
+ * For OpenAI v3 models, dimensions are configurable via API parameters.
  */
 export const EMBEDDING_MODELS = {
-  // Ollama models
-  'nomic-embed-text': { dimensions: 768, provider: 'ollama' },
-  'all-minilm': { dimensions: 384, provider: 'ollama' },
-  'bge-large': { dimensions: 1024, provider: 'ollama' },
+  // Ollama models (local/free)
+  'nomic-embed-text': { 
+    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '768'), 
+    provider: 'ollama',
+    nativeDimensions: 768
+  },
+  'all-minilm': { 
+    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '384'), 
+    provider: 'ollama',
+    nativeDimensions: 384
+  },
+  'bge-small': { 
+    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '384'), 
+    provider: 'ollama',
+    nativeDimensions: 384
+  },
+  'bge-large': { 
+    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '1024'), 
+    provider: 'ollama',
+    nativeDimensions: 1024
+  },
   
-  // OpenAI models
-  'text-embedding-ada-002': { dimensions: 1536, provider: 'openai' },
-  'text-embedding-3-small': { dimensions: 1536, provider: 'openai' },
-  'text-embedding-3-large': { dimensions: 3072, provider: 'openai' }
+  // OpenAI models (cloud/paid) - Only v3 models support 768 dimensions
+  'text-embedding-3-small': { 
+    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '768'), 
+    provider: 'openai',
+    nativeDimensions: 1536,
+    configurable: true // Can be reduced via API parameter
+  },
+  'text-embedding-3-large': { 
+    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '768'), 
+    provider: 'openai',
+    nativeDimensions: 3072,
+    configurable: true // Can be reduced via API parameter
+  }
 } as const;
 
 export type EmbeddingModel = keyof typeof EMBEDDING_MODELS;

@@ -103,11 +103,13 @@ LLM_PROVIDER=ollama        # or openai
 # For Ollama (local/free)
 OLLAMA_BASE_URL=http://localhost:11434
 EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSIONS=768
 LLM_MODEL=mistral
 
 # For OpenAI (cloud/paid)
 OPENAI_API_KEY=sk-your-key
-EMBEDDING_MODEL=text-embedding-ada-002
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIMENSIONS=768
 LLM_MODEL=gpt-4
 ```
 

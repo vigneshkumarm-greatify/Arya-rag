@@ -88,10 +88,11 @@ export class EmbeddingServiceFactory {
     const ollamaConfig: Partial<OllamaEmbeddingConfig> = {
       baseUrl: config.ollamaBaseUrl,
       model: config.model,
-      maxBatchSize: config.maxBatchSize,
-      maxRetries: config.maxRetries,
-      retryDelayMs: config.retryDelayMs,
-      timeoutMs: config.timeoutMs
+      // Only pass these values if they're defined, let the service use its defaults otherwise
+      ...(config.maxBatchSize !== undefined && { maxBatchSize: config.maxBatchSize }),
+      ...(config.maxRetries !== undefined && { maxRetries: config.maxRetries }),
+      ...(config.retryDelayMs !== undefined && { retryDelayMs: config.retryDelayMs }),
+      ...(config.timeoutMs !== undefined && { timeoutMs: config.timeoutMs })
     };
 
     return new OllamaEmbeddingService(ollamaConfig);
@@ -105,10 +106,11 @@ export class EmbeddingServiceFactory {
       apiKey: config.openaiApiKey,
       model: config.model,
       organization: config.openaiOrganization,
-      maxBatchSize: config.maxBatchSize,
-      maxRetries: config.maxRetries,
-      retryDelayMs: config.retryDelayMs,
-      timeoutMs: config.timeoutMs
+      // Only pass these values if they're defined, let the service use its defaults otherwise
+      ...(config.maxBatchSize !== undefined && { maxBatchSize: config.maxBatchSize }),
+      ...(config.maxRetries !== undefined && { maxRetries: config.maxRetries }),
+      ...(config.retryDelayMs !== undefined && { retryDelayMs: config.retryDelayMs }),
+      ...(config.timeoutMs !== undefined && { timeoutMs: config.timeoutMs })
     };
 
     return new OpenAIEmbeddingService(openaiConfig);
@@ -152,14 +154,21 @@ export class EmbeddingServiceFactory {
   }
 
   /**
-   * Get default model for a provider
+   * Get default model for a provider - now uses unified EMBEDDING_MODEL
    */
   private getDefaultModel(provider: EmbeddingProvider): string {
+    // Use unified EMBEDDING_MODEL env var first
+    const modelFromEnv = process.env.EMBEDDING_MODEL;
+    if (modelFromEnv) {
+      return modelFromEnv;
+    }
+
+    // Fallback to provider-specific defaults
     switch (provider) {
       case 'ollama':
         return process.env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text';
       case 'openai':
-        return process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-ada-002';
+        return process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }

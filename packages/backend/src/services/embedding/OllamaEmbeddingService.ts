@@ -54,8 +54,8 @@ export class OllamaEmbeddingService extends EmbeddingService {
     const defaultConfig = {
       ...EMBEDDING_CONFIGS.ollama,
       baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-      model: process.env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text',
-      dimensions: 768, // Default for nomic-embed-text
+      model: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
+      dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '768'),
       maxBatchSize: 50,
       maxRetries: 3,
       retryDelayMs: 1000,
@@ -65,21 +65,26 @@ export class OllamaEmbeddingService extends EmbeddingService {
     super({ ...defaultConfig, ...config });
     this.baseUrl = (config.baseUrl || defaultConfig.baseUrl).replace(/\/$/, '');
     
-    console.log(`🔗 Initialized Ollama Embedding Service`);
-    console.log(`   Base URL: ${this.baseUrl}`);
-    console.log(`   Model: ${this.config.model}`);
-    console.log(`   Dimensions: ${this.config.dimensions}`);
+    console.log(`🔗 Ollama Embedding Service: ${this.config.model} (${this.config.dimensions}D)`);
   }
 
   /**
    * Generate embedding for a single text using Ollama
    */
   async generateEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    console.log(`🔗 Generating embedding (${request.text.length} chars)`);
+    
     this.validateText(request.text);
     
     const startTime = Date.now();
     
     try {
+      // First check if Ollama is ready
+      const readyCheck = await this.isReady();
+      if (!readyCheck.ready) {
+        throw new Error(`Ollama not ready: ${readyCheck.message}`);
+      }
+      
       const embedding = await this.withRetry(
         () => this.callOllamaEmbedding(request.text),
         `Generate embedding for text (${request.text.length} chars)`
@@ -101,7 +106,9 @@ export class OllamaEmbeddingService extends EmbeddingService {
       const processingTime = Date.now() - startTime;
       this.updateStats(0, processingTime, true);
       
-      throw new Error(`Ollama embedding generation failed: ${error instanceof Error ? error.message : error}`);
+      console.error(`❌ Ollama embedding failed: ${error instanceof Error ? error.message : error}`);
+      
+      throw new Error(`Ollama embedding generation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -115,14 +122,14 @@ export class OllamaEmbeddingService extends EmbeddingService {
     const errors: any[] = [];
     let totalTokens = 0;
 
-    console.log(`🔄 Processing batch of ${request.texts.length} embeddings with Ollama`);
+    console.log(`🔄 Batch embedding: ${request.texts.length} texts`);
 
     // Split into smaller batches to avoid overwhelming Ollama
     const batches = this.splitBatch(request.texts);
     
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const batch = batches[batchIndex];
-      console.log(`   Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} texts)`);
+      console.log(`   Batch ${batchIndex + 1}/${batches.length}: ${batch.length} texts`);
 
       // Process batch in parallel with some concurrency control
       const batchPromises = batch.map(async (embeddingRequest, index) => {
@@ -169,10 +176,7 @@ export class OllamaEmbeddingService extends EmbeddingService {
 
     const processingTime = Date.now() - startTime;
     
-    console.log(`✅ Batch processing complete: ${embeddings.length}/${request.texts.length} successful`);
-    if (errors.length > 0) {
-      console.warn(`⚠️  ${errors.length} embedding errors occurred`);
-    }
+    console.log(`✅ Batch complete: ${embeddings.length}/${request.texts.length} successful${errors.length > 0 ? ` (${errors.length} errors)` : ''}`);
 
     return {
       embeddings,
@@ -267,6 +271,8 @@ export class OllamaEmbeddingService extends EmbeddingService {
       prompt: text
     };
 
+    // API call to Ollama embeddings endpoint
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
@@ -287,8 +293,15 @@ export class OllamaEmbeddingService extends EmbeddingService {
         throw new Error(`Ollama API error (${response.status}): ${errorText}`);
       }
 
-      const data = await response.json() as OllamaEmbeddingAPIResponse;
+      const responseText = await response.text();
       
+      let data: OllamaEmbeddingAPIResponse;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        throw new Error(`Failed to parse Ollama response: ${parseError}`);
+      }
+
       if (!data.embedding || !Array.isArray(data.embedding) || data.embedding.length === 0) {
         throw new Error('Invalid embedding response from Ollama');
       }
@@ -298,14 +311,22 @@ export class OllamaEmbeddingService extends EmbeddingService {
     } catch (error) {
       clearTimeout(timeoutId);
       
+      console.error(`💥 Ollama API call failed:`, error instanceof Error ? error.message : error);
+      
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           throw new Error(`Ollama request timed out after ${this.config.timeoutMs}ms`);
         }
+        if (error.message.includes('ECONNREFUSED')) {
+          throw new Error(`Cannot connect to Ollama at ${this.baseUrl}. Is Ollama running? Try: ollama serve`);
+        }
+        if (error.message.includes('fetch')) {
+          throw new Error(`Network error calling Ollama: ${error.message}`);
+        }
         throw error;
       }
       
-      throw new Error(`Unknown error calling Ollama: ${error}`);
+      throw new Error(`Unknown error calling Ollama: ${typeof error} ${String(error)}`);
     }
   }
 

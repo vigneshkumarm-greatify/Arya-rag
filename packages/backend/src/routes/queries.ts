@@ -33,7 +33,7 @@ async function initializeServices() {
       
       const ragConfig = {
         maxSearchResults: parseInt(process.env.RAG_MAX_SEARCH_RESULTS || '10'),
-        similarityThreshold: parseFloat(process.env.RAG_SIMILARITY_THRESHOLD || '0.7'),
+        similarityThreshold: parseFloat(process.env.RAG_SIMILARITY_THRESHOLD || '0.65'),
         maxResponseTokens: parseInt(process.env.RAG_MAX_RESPONSE_TOKENS || '1000'),
         temperature: parseFloat(process.env.RAG_TEMPERATURE || '0.7'),
         maxContextTokens: parseInt(process.env.RAG_MAX_CONTEXT_TOKENS || '3000'),
@@ -326,7 +326,7 @@ router.get('/test/connectivity',
       },
       configuration: {
         maxSearchResults: process.env.RAG_MAX_SEARCH_RESULTS || '10',
-        similarityThreshold: process.env.RAG_SIMILARITY_THRESHOLD || '0.7',
+        similarityThreshold: process.env.RAG_SIMILARITY_THRESHOLD || '0.65',
         maxResponseTokens: process.env.RAG_MAX_RESPONSE_TOKENS || '1000',
         embeddingProvider: process.env.EMBEDDING_PROVIDER || 'ollama',
         llmProvider: process.env.LLM_PROVIDER || 'ollama'

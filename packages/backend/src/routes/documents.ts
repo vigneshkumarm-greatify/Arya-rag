@@ -147,7 +147,7 @@ router.post('/upload',
       processing_completed_at: null,
       total_pages: 0,
       total_chunks: 0,
-      embedding_model: process.env.EMBEDDING_PROVIDER === 'openai' ? 'text-embedding-ada-002' : 'nomic-embed-text',
+      embedding_model: process.env.EMBEDDING_MODEL || (process.env.EMBEDDING_PROVIDER === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text'),
       tags: tags || [],
       // Storage information
       storage_path: uploadResult.filePath,
@@ -791,7 +791,7 @@ async function processDocumentInBackground(
     // Get the actual model name from the first embedding response
     const actualModelName = chunksWithEmbeddings.length > 0 && chunksWithEmbeddings[0].embeddingResponse?.model 
       ? chunksWithEmbeddings[0].embeddingResponse.model 
-      : (process.env.EMBEDDING_PROVIDER === 'openai' ? 'text-embedding-ada-002' : 'nomic-embed-text');
+      : (process.env.EMBEDDING_MODEL || (process.env.EMBEDDING_PROVIDER === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text'));
     
     console.log(`🤖 Storing with embedding model: ${actualModelName}`);
     
@@ -825,7 +825,7 @@ async function processDocumentInBackground(
       throw new Error(`Vector storage failed: ${errorMessage}`);
     }
 
-    console.log(`💾 Stored ${storageResult.chunksStored} chunks in vector database`);
+    console.log(`💾 Stored ${storageResult.storedCount} chunks in vector database`);
 
     // Update document status to completed
     await (db as any)

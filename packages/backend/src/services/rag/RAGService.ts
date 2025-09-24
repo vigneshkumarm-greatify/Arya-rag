@@ -57,7 +57,7 @@ export class RAGService {
   ) {
     this.config = {
       maxSearchResults: config.maxSearchResults || 10,
-      similarityThreshold: config.similarityThreshold || 0.7,
+      similarityThreshold: config.similarityThreshold || 0.65,
       maxResponseTokens: config.maxResponseTokens || 1000,
       temperature: config.temperature || 0.7,
       maxContextTokens: config.maxContextTokens || 3000,
@@ -71,6 +71,10 @@ export class RAGService {
     this.embeddingService = embeddingService || EmbeddingServiceFactory.createFromEnvironment();
     this.searchService = searchService || new VectorSearchService();
 
+    // Log RAG configuration
+    const embeddingModel = ('config' in this.embeddingService) ? (this.embeddingService as any).config?.model : 'unknown';
+    console.log(`🔍 RAG Service: ${embeddingModel} + ${this.llmService.constructor.name}`);
+
     // Initialize stats
     this.stats = {
       totalQueries: 0,
@@ -81,11 +85,6 @@ export class RAGService {
       successRate: 1.0
     };
 
-    console.log('🔄 Initialized RAG Service');
-    console.log(`   Max search results: ${this.config.maxSearchResults}`);
-    console.log(`   Similarity threshold: ${this.config.similarityThreshold}`);
-    console.log(`   Max response tokens: ${this.config.maxResponseTokens}`);
-    console.log(`   Require citations: ${this.config.requireSourceCitations}`);
   }
 
   /**
@@ -95,7 +94,7 @@ export class RAGService {
     const startTime = Date.now();
     
     try {
-      console.log(`🔍 Processing RAG query: "${request.query}"`);
+      console.log(`🔍 RAG query: "${request.query.substring(0, 100)}${request.query.length > 100 ? '...' : ''}"`);
       
       // Step 1: Generate query embedding
       const embeddingStart = Date.now();
@@ -154,7 +153,7 @@ export class RAGService {
       const processingTime = Date.now() - startTime;
       this.updateStats(null, 0, 0, false);
       
-      console.error('RAG query failed:', error);
+      console.error(`❌ RAG query failed: ${error instanceof Error ? error.message : error}`);
       
       // Return error response
       return {
@@ -191,6 +190,8 @@ export class RAGService {
     maxResults: number = 10,
     queryText?: string
   ) {
+    console.log(`🔍 Searching ${maxResults} chunks (threshold: ${this.config.similarityThreshold})`);
+    
     return await this.searchService.search(queryEmbedding, userId, {
       topK: maxResults,
       similarityThreshold: this.config.similarityThreshold,
@@ -220,7 +221,7 @@ export class RAGService {
       const excerptTokens = Math.ceil(excerpt.length / 4);
       
       if (tokenCount + excerptTokens > maxTokens) {
-        console.log(`Context limit reached at ${tokenCount} tokens (${i} sources)`);
+        console.log(`✂️ Context limit: ${tokenCount} tokens (${i} sources)`);
         break;
       }
       

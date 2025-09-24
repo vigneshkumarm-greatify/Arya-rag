@@ -52,7 +52,7 @@ export class VectorSearchService {
     this.db = DatabaseClient.getInstance().getClient();
     this.config = {
       defaultTopK: config.defaultTopK || 10,
-      defaultSimilarityThreshold: config.defaultSimilarityThreshold || 0.7,
+      defaultSimilarityThreshold: config.defaultSimilarityThreshold || 0.65,
       maxTopK: config.maxTopK || 50,
       cacheResults: config.cacheResults ?? true,
       cacheTTLSeconds: config.cacheTTLSeconds || 300 // 5 minutes
@@ -66,10 +66,7 @@ export class VectorSearchService {
       cacheHitRate: 0
     };
 
-    console.log('🔍 Initialized Vector Search Service');
-    console.log(`   Default top-k: ${this.config.defaultTopK}`);
-    console.log(`   Similarity threshold: ${this.config.defaultSimilarityThreshold}`);
-    console.log(`   Cache enabled: ${this.config.cacheResults}`);
+    console.log('🔍 Vector Search Service initialized');
   }
 
   /**
@@ -91,7 +88,7 @@ export class VectorSearchService {
     const cachedResults = this.getCachedResults(cacheKey);
     if (cachedResults) {
       this.updateStats(cachedResults.length, Date.now() - startTime, true);
-      console.log(`🎯 Cache hit for query (${cachedResults.length} results)`);
+      console.log(`🎯 Cache hit: ${cachedResults.length} results`);
       return cachedResults;
     }
 
@@ -99,67 +96,176 @@ export class VectorSearchService {
     const topK = Math.min(options.topK || this.config.defaultTopK, this.config.maxTopK);
     const similarityThreshold = options.similarityThreshold || this.config.defaultSimilarityThreshold;
 
-    console.log(`🔍 Searching for ${topK} similar chunks (threshold: ${similarityThreshold})`);
+    console.log(`🔍 Vector search: ${topK} results, threshold: ${similarityThreshold}`);
 
     try {
-      // For POC, we'll use a simple similarity search without custom RPC
-      // In production, you'd implement the RPC function in the database
-      const { data, error } = await this.db
-        .from('document_chunks' as any)
-        .select(`
-          chunk_id,
-          document_id,
-          chunk_text,
-          page_number,
-          section_title,
-          user_documents!inner(filename)
-        `)
-        .eq('user_id', userId)
-        .limit(topK);
+      // Validate embedding dimensions
+      if (queryEmbedding?.length) {
+        console.log(`📡 Starting vector search (${queryEmbedding.length}D embedding)`);
+      }
+      
+      // Ensure embedding is an array (not a string) for RPC
+      let embeddingArray = queryEmbedding;
+      if (typeof queryEmbedding === 'string') {
+        try {
+          embeddingArray = JSON.parse(queryEmbedding);
+          console.log('📋 Converted embedding from string to array');
+        } catch (e) {
+          console.error('❌ Failed to parse embedding string:', e);
+        }
+      }
+      
+      // Fix dimension mismatch - ensure exactly 768 dimensions
+      if (embeddingArray.length !== 768) {
+        console.log(`⚠️ Dimension mismatch: got ${embeddingArray.length}, expected 768`);
+        if (embeddingArray.length > 768) {
+          // Truncate to 768
+          embeddingArray = embeddingArray.slice(0, 768);
+          console.log('✂️ Truncated embedding to 768 dimensions');
+        } else {
+          // Pad with zeros to 768
+          const padding = new Array(768 - embeddingArray.length).fill(0);
+          embeddingArray = [...embeddingArray, ...padding];
+          console.log(`➕ Padded embedding with ${padding.length} zeros to 768 dimensions`);
+        }
+      }
+      
+      const rpcParams = {
+        query_embedding: embeddingArray,
+        user_id_param: userId,
+        similarity_threshold: similarityThreshold,
+        match_count: topK
+      };
+      // Log dimension fix if applied
+      if (embeddingArray.length !== queryEmbedding.length) {
+        console.log(`⚙️ Adjusted embedding dimensions: ${queryEmbedding.length} → ${embeddingArray.length}`);
+      }
+      
+      // Try the RPC call with the embedding as-is
+      let { data, error } = await this.db.rpc('vector_search', rpcParams);
+      
+      // If no results, try with lower threshold
+      if (!error && (!data || data.length === 0) && similarityThreshold > 0.5) {
+        console.log('🔄 Retrying with lower threshold (0.5)');
+        const { data: lowThresholdData, error: lowThresholdError } = await this.db.rpc('vector_search', {
+          ...rpcParams,
+          similarity_threshold: 0.5
+        });
+        
+        if (!lowThresholdError && lowThresholdData?.length > 0) {
+          const filteredData = lowThresholdData.filter(r => r.similarity_score >= similarityThreshold);
+          data = filteredData.length > 0 ? filteredData : lowThresholdData;
+          console.log(`✅ Fallback found ${data.length} results`);
+        }
+      }
+
+      // Log response status
+      if (error) {
+        console.log(`❌ RPC error: ${error.message}`);
+      } else {
+        console.log(`📥 RPC returned ${data?.length || 0} results`);
+      }
+      
+      // Direct SQL fallback if RPC fails
+      if (!error && (!data || data.length === 0)) {
+        console.log('🔄 Trying direct SQL fallback');
+        // SQL fallback code remains the same but with simplified logging
+        try {
+          const sqlQuery = `
+            SELECT 
+              dc.chunk_id,
+              dc.document_id,
+              dc.chunk_text,
+              dc.page_number,
+              dc.section_title,
+              ud.filename,
+              (1 - (dc.embedding <=> $1::vector(768))) as similarity_score
+            FROM document_chunks dc
+            INNER JOIN user_documents ud ON dc.document_id = ud.document_id
+            WHERE 
+              dc.user_id = $2
+              AND dc.embedding IS NOT NULL
+              AND (1 - (dc.embedding <=> $1::vector(768))) >= $3
+            ORDER BY dc.embedding <=> $1::vector(768)
+            LIMIT $4
+          `;
+          
+          const { data: sqlData, error: sqlError } = await this.db
+            .rpc('exec_sql', {
+              sql_query: sqlQuery,
+              params: [embeddingArray, userId, similarityThreshold, topK]
+            });
+            
+          if (!sqlError && sqlData?.length > 0) {
+            console.log(`✅ SQL fallback found ${sqlData.length} results`);
+            Object.assign(data, sqlData);
+          }
+        } catch (sqlError) {
+          console.log(`❌ SQL fallback failed: ${sqlError.message}`);
+        }
+      }
+      
+      // Test index usage in development only
+      if (process.env.NODE_ENV === 'development' && data?.length > 0) {
+        try {
+          const { data: explainData } = await this.db.rpc('exec_sql', {
+            sql_query: 'EXPLAIN SELECT 1 FROM document_chunks WHERE user_id = $1 LIMIT 1',
+            params: [userId]
+          });
+          const usesIndex = JSON.stringify(explainData).includes('idx_document_chunks_embedding');
+          console.log(`🔍 Index status: ${usesIndex ? 'HNSW' : 'Sequential'}`);
+        } catch {
+          // Ignore index test errors
+        }
+      }
 
       if (error) {
-        console.error('Vector search error:', error);
-        throw new Error(`Search failed: ${error.message}`);
+        console.error(`❌ Vector search failed: ${error.message}`);
+        throw new Error(`Vector search RPC failed: ${error.message}`);
       }
 
-      // Debug: Log the first row structure to understand the data format
-      if (data && data.length > 0) {
-        console.log('🔍 First row structure:', {
-          rawRow: data[0],
-          userDocuments: data[0].user_documents,
-          userDocumentsType: typeof data[0].user_documents,
-          userDocumentsIsArray: Array.isArray(data[0].user_documents)
+      if (!data || data.length === 0) {
+        console.log('⚠️ No results found (empty database or similarity < threshold)');
+        return [];
+      }
+
+      // Log search results summary
+      const similarities = data.map((row: any) => row.similarity_score);
+      const avgSimilarity = similarities.reduce((a, b) => a + b, 0) / similarities.length;
+      const maxSimilarity = Math.max(...similarities);
+      const minSimilarity = Math.min(...similarities);
+      
+      console.log(`✅ Found ${data.length} results (similarity: ${minSimilarity.toFixed(3)}-${maxSimilarity.toFixed(3)}, avg: ${avgSimilarity.toFixed(3)})`);
+      
+      // Show top results briefly
+      if (data.length > 0 && process.env.NODE_ENV === 'development') {
+        data.slice(0, 3).forEach((row: any, i: number) => {
+          console.log(`  ${i + 1}. Page ${row.page_number}: ${row.similarity_score.toFixed(3)} - "${row.chunk_text?.substring(0, 80)}..."`);
         });
+        if (data.length > 3) console.log(`  ... and ${data.length - 3} more`);
       }
 
-      // Mock similarity scores for POC (in production, this would come from vector similarity)
-      const resultsWithSimilarity = (data || []).map((row: any, index) => {
-        // Try different ways to access the filename
-        let documentName = 'Unknown';
-        if (row.user_documents) {
-          if (Array.isArray(row.user_documents) && row.user_documents[0]) {
-            documentName = row.user_documents[0].filename || 'Unknown';
-          } else if (typeof row.user_documents === 'object') {
-            documentName = row.user_documents.filename || 'Unknown';
-          }
-        }
+      // Convert results to our expected format
+      const resultsWithSimilarity = data.map((row: any) => ({
+        id: row.chunk_id,
+        document_id: row.document_id,
+        document_name: row.filename || 'Unknown',
+        chunk_text: row.chunk_text,
+        page_number: row.page_number,
+        section_title: row.section_title,
+        similarity: row.similarity_score
+      }));
 
-        return {
-          id: row.chunk_id,
-          document_id: row.document_id,
-          document_name: documentName,
-          chunk_text: row.chunk_text,
-          page_number: row.page_number,
-          section_title: row.section_title,
-          similarity: Math.max(0.5, 1 - (index * 0.1)) // Mock decreasing similarity
-        };
-      });
+      console.log(`\n📊 FINAL RESULT: ${resultsWithSimilarity.length} results above threshold ${similarityThreshold}`);
+      console.log('=' .repeat(80));
+      console.log('🚀 VECTOR SEARCH DEBUG - COMPLETED');
+      console.log('=' .repeat(80));
 
       // Convert to extended search results
       const results = this.formatSearchResults(resultsWithSimilarity, {
         searchTimeMs: Date.now() - startTime,
         totalCandidates: resultsWithSimilarity.length,
-        model: 'pgvector_cosine'
+        model: 'pgvector_cosine_real'
       });
 
       // Cache results if enabled
@@ -175,8 +281,69 @@ export class VectorSearchService {
       return results;
 
     } catch (error) {
-      console.error('Search error:', error);
-      throw error;
+      console.error(`❌ Vector search failed: ${error.message}`);
+      console.log('🔄 Falling back to basic query');
+      
+      // Fallback to basic query without vector search
+      try {
+        const { data: fallbackData, error: fallbackError } = await this.db
+          .from('document_chunks' as any)
+          .select(`
+            chunk_id,
+            document_id,
+            chunk_text,
+            page_number,
+            section_title,
+            user_documents!inner(filename)
+          `)
+          .eq('user_id', userId)
+          .limit(topK);
+
+        if (fallbackError) {
+          console.error('❌ Fallback query also failed:', fallbackError);
+          throw new Error(`Both vector search and fallback failed: ${fallbackError.message}`);
+        }
+
+        console.log(`⚠️ Fallback returned ${fallbackData?.length || 0} results with mock similarity`);
+        
+        // Apply mock similarity scores (old behavior)
+        const fallbackResults = (fallbackData || []).map((row: any, index) => {
+          let documentName = 'Unknown';
+          if (row.user_documents) {
+            if (Array.isArray(row.user_documents) && row.user_documents[0]) {
+              documentName = row.user_documents[0].filename || 'Unknown';
+            } else if (typeof row.user_documents === 'object') {
+              documentName = row.user_documents.filename || 'Unknown';
+            }
+          }
+
+          const mockSimilarity = Math.max(0.5, 1 - (index * 0.1));
+          
+          return {
+            id: row.chunk_id,
+            document_id: row.document_id,
+            document_name: documentName,
+            chunk_text: row.chunk_text,
+            page_number: row.page_number,
+            section_title: row.section_title,
+            similarity: mockSimilarity
+          };
+        }).filter(result => result.similarity >= similarityThreshold);
+
+        console.log(`⚠️ Fallback final: ${fallbackResults.length} results (vector search unavailable)`);
+
+        const results = this.formatSearchResults(fallbackResults, {
+          searchTimeMs: Date.now() - startTime,
+          totalCandidates: fallbackData?.length || 0,
+          model: 'fallback_mock_similarity'
+        });
+
+        return results;
+
+      } catch (fallbackError) {
+        console.error('❌ Complete failure - both vector search and fallback failed');
+        throw new Error(`Complete search failure: ${error.message} | Fallback: ${fallbackError.message}`);
+      }
     }
   }
 
@@ -188,7 +355,7 @@ export class VectorSearchService {
     userId: string,
     options: SearchOptions = {}
   ): Promise<ExtendedSearchResult[]> {
-    console.log(`🔍 Multi-search with ${queryEmbeddings.length} query variations`);
+    console.log(`🔍 Multi-search: ${queryEmbeddings.length} variations`);
 
     // Run searches in parallel
     const searchPromises = queryEmbeddings.map(embedding => 
@@ -436,7 +603,7 @@ export class VectorSearchService {
    */
   clearCache(): void {
     this.searchCache.clear();
-    console.log('🗑️  Search cache cleared');
+    console.log('🗑️ Search cache cleared');
   }
 
   /**

@@ -35,8 +35,8 @@ export class OpenAIEmbeddingService extends EmbeddingService {
     const defaultConfig = {
       ...EMBEDDING_CONFIGS.openai,
       apiKey: process.env.OPENAI_API_KEY || '',
-      model: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-ada-002',
-      dimensions: 1536, // Default for ada-002
+      model: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
+      dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '768'),
       maxBatchSize: 100,
       maxRetries: 5,
       retryDelayMs: 2000,
@@ -47,6 +47,14 @@ export class OpenAIEmbeddingService extends EmbeddingService {
     
     if (!config.apiKey && !process.env.OPENAI_API_KEY) {
       throw new Error('OpenAI API key is required. Set OPENAI_API_KEY environment variable.');
+    }
+
+    // Prevent usage of incompatible models with 768-dimension setup
+    if (this.config.model === 'text-embedding-ada-002') {
+      throw new Error(
+        'text-embedding-ada-002 is not compatible with 768-dimension setup. ' +
+        'Use text-embedding-3-small or text-embedding-3-large instead.'
+      );
     }
 
     // Initialize OpenAI client
@@ -67,10 +75,7 @@ export class OpenAIEmbeddingService extends EmbeddingService {
       this.config.dimensions = modelInfo.dimensions;
     }
 
-    console.log(`🔗 Initialized OpenAI Embedding Service`);
-    console.log(`   Model: ${this.config.model}`);
-    console.log(`   Dimensions: ${this.config.dimensions}`);
-    console.log(`   Cost per 1K tokens: $${(this.costPerToken * 1000).toFixed(6)}`);
+    console.log(`🔗 OpenAI Embedding Service: ${this.config.model} (${this.config.dimensions}D)`);
   }
 
   /**
@@ -82,23 +87,31 @@ export class OpenAIEmbeddingService extends EmbeddingService {
     const startTime = Date.now();
     
     try {
-      console.log(`🔗 Making OpenAI embedding call for ${request.text.length} characters...`);
+      console.log(`🔗 Generating embedding (${request.text.length} chars)`);
       
       // Direct API call like Arya-Chatbot - no complex retry wrapper
-      const response = await this.client.embeddings.create({
+      const apiParams: any = {
         model: this.config.model,
         input: [request.text],
-      });
+      };
       
-      console.log('✅ OpenAI API response received:', {
-        hasResponse: !!response,
-        hasData: !!response?.data,
-        dataLength: response?.data?.length || 0,
-        firstEmbeddingLength: response?.data?.[0]?.embedding?.length || 0
-      });
-
+      // Add dimensions parameter for text-embedding-3-small and text-embedding-3-large
+      if (this.config.model.startsWith('text-embedding-3')) {
+        apiParams.dimensions = this.config.dimensions;
+      }
+      
+      const response = await this.client.embeddings.create(apiParams);
+      
+      const firstEmbedding = response.data[0].embedding;
       const tokenCount = countTokens(request.text);
       const processingTime = Date.now() - startTime;
+      
+      // Basic validation
+      const isValid = firstEmbedding.length > 0 && 
+        !firstEmbedding.every(v => v === 0) && 
+        !firstEmbedding.every(v => v === firstEmbedding[0]);
+      
+      console.log(`✅ Generated ${firstEmbedding.length}D embedding in ${processingTime}ms ${isValid ? '' : '(⚠️ invalid)'}`);
       
       // Update stats including cost
       this.updateStats(tokenCount, processingTime, false);
@@ -119,7 +132,7 @@ export class OpenAIEmbeddingService extends EmbeddingService {
       const processingTime = Date.now() - startTime;
       this.updateStats(0, processingTime, true);
       
-      console.error('❌ OpenAI embedding generation error:', error);
+      console.error(`❌ OpenAI embedding failed: ${error.message || error}`);
       throw new Error('Failed to generate embeddings');
     }
   }
@@ -134,14 +147,14 @@ export class OpenAIEmbeddingService extends EmbeddingService {
     const errors: any[] = [];
     let totalTokens = 0;
 
-    console.log(`🔄 Processing batch of ${request.texts.length} embeddings with OpenAI`);
+    console.log(`🔄 Batch embedding: ${request.texts.length} texts`);
 
     // Split into smaller batches to respect API limits
     const batches = this.splitBatch(request.texts);
     
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const batch = batches[batchIndex];
-      console.log(`   Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} texts)`);
+      console.log(`   Batch ${batchIndex + 1}/${batches.length}: ${batch.length} texts`);
 
       try {
         const batchTexts = batch.map(req => req.text);
@@ -212,10 +225,17 @@ export class OpenAIEmbeddingService extends EmbeddingService {
   async testConnection(): Promise<boolean> {
     try {
       // Make a minimal embedding request to test connectivity
-      await this.client.embeddings.create({
+      const testParams: any = {
         input: 'test',
         model: this.config.model
-      });
+      };
+      
+      // Add dimensions parameter for text-embedding-3-small and text-embedding-3-large
+      if (this.config.model.startsWith('text-embedding-3')) {
+        testParams.dimensions = this.config.dimensions;
+      }
+      
+      await this.client.embeddings.create(testParams);
       
       console.log(`✅ OpenAI connection test passed with model '${this.config.model}'`);
       return true;
@@ -240,10 +260,17 @@ export class OpenAIEmbeddingService extends EmbeddingService {
     if (!modelInfo) {
       // Make a test call to determine dimensions
       try {
-        const response = await this.client.embeddings.create({
+        const testParams: any = {
           input: 'test',
           model: this.config.model
-        });
+        };
+        
+        // Add dimensions parameter for text-embedding-3-small and text-embedding-3-large
+        if (this.config.model.startsWith('text-embedding-3')) {
+          testParams.dimensions = this.config.dimensions;
+        }
+        
+        const response = await this.client.embeddings.create(testParams);
         
         return {
           name: this.config.model,
@@ -276,11 +303,18 @@ export class OpenAIEmbeddingService extends EmbeddingService {
         apiKeyPresent: !!this.client.apiKey
       });
       
-      const response = await this.client.embeddings.create({
+      const apiParams: any = {
         input: texts,
         model: this.config.model,
         encoding_format: 'float' // Ensure we get float arrays
-      });
+      };
+      
+      // Add dimensions parameter for text-embedding-3-small and text-embedding-3-large
+      if (this.config.model.startsWith('text-embedding-3')) {
+        apiParams.dimensions = this.config.dimensions;
+      }
+      
+      const response = await this.client.embeddings.create(apiParams);
       
       console.log(`✅ OpenAI embeddings.create response:`, {
         hasResponse: !!response,
@@ -320,14 +354,13 @@ export class OpenAIEmbeddingService extends EmbeddingService {
    * Get cost per token for different OpenAI embedding models
    */
   private getCostPerToken(model: string): number {
-    // Prices as of 2024 (per 1M tokens)
+    // Prices as of 2024 (per 1M tokens) - Only v3 models supported
     const prices: Record<string, number> = {
-      'text-embedding-ada-002': 0.0001 / 1000000,        // $0.0001/1M tokens
       'text-embedding-3-small': 0.00002 / 1000000,       // $0.00002/1M tokens  
       'text-embedding-3-large': 0.00013 / 1000000        // $0.00013/1M tokens
     };
 
-    return prices[model] || prices['text-embedding-ada-002']; // Default to ada-002 pricing
+    return prices[model] || prices['text-embedding-3-small']; // Default to 3-small pricing
   }
 
   /**
@@ -336,10 +369,17 @@ export class OpenAIEmbeddingService extends EmbeddingService {
   async isReady(): Promise<{ ready: boolean; message: string }> {
     try {
       // Test with minimal request
-      await this.client.embeddings.create({
+      const testParams: any = {
         input: 'test',
         model: this.config.model
-      });
+      };
+      
+      // Add dimensions parameter for text-embedding-3-small and text-embedding-3-large
+      if (this.config.model.startsWith('text-embedding-3')) {
+        testParams.dimensions = this.config.dimensions;
+      }
+      
+      await this.client.embeddings.create(testParams);
 
       return {
         ready: true,

@@ -456,7 +456,7 @@ function getSystemConfiguration() {
     chunkOverlapTokens: process.env.CHUNK_OVERLAP_TOKENS || '100',
     maxFileSizeMB: process.env.MAX_FILE_SIZE_MB || '100',
     ragMaxSearchResults: process.env.RAG_MAX_SEARCH_RESULTS || '10',
-    ragSimilarityThreshold: process.env.RAG_SIMILARITY_THRESHOLD || '0.7',
+    ragSimilarityThreshold: process.env.RAG_SIMILARITY_THRESHOLD || '0.65',
     database: {
       url: process.env.SUPABASE_URL ? `${process.env.SUPABASE_URL.substring(0, 20)}...` : 'Not configured',
       hasKey: !!process.env.SUPABASE_ANON_KEY
