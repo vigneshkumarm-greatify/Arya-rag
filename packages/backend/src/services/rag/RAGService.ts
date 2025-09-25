@@ -14,6 +14,8 @@ import { EmbeddingServiceFactory } from '../embedding/EmbeddingServiceFactory';
 import { VectorSearchService } from '../vector/VectorSearchService';
 import { DatabaseClient } from '../../config/database';
 import { RAGRequest, RAGResponse, SourceReference } from '@arya-rag/types';
+import { OllamaLLMService } from '../llm/OllamaLLMService';
+import { promptTemplateManager, QueryClassification, PromptConfig } from './PromptTemplates';
 
 export interface RAGConfig {
   // Search configuration
@@ -31,6 +33,12 @@ export interface RAGConfig {
   // Citation configuration
   requireSourceCitations: boolean;
   maxSourcesPerResponse: number;
+  
+  // Enhanced Mistral-specific options
+  enableStructuredResponses: boolean;
+  useQueryClassification: boolean;
+  enforceJsonFormat: boolean;
+  enablePromptOptimization: boolean;
 }
 
 export interface RAGStats {
@@ -55,15 +63,23 @@ export class RAGService {
     embeddingService?: EmbeddingService,
     searchService?: VectorSearchService
   ) {
+    // Check if using Ollama/Mistral for enhanced features
+    const usingOllama = llmService instanceof OllamaLLMService || 
+      (!llmService && process.env.LLM_PROVIDER === 'ollama');
+    
     this.config = {
       maxSearchResults: config.maxSearchResults || 10,
       similarityThreshold: config.similarityThreshold || 0.65,
-      maxResponseTokens: config.maxResponseTokens || 1000,
-      temperature: config.temperature || 0.7,
-      maxContextTokens: config.maxContextTokens || 3000,
+      maxResponseTokens: config.maxResponseTokens || (usingOllama ? 3000 : 1000),
+      temperature: config.temperature || (usingOllama ? 0.1 : 0.7),
+      maxContextTokens: config.maxContextTokens || (usingOllama ? 5000 : 3000),
       includeSourceExcerpts: config.includeSourceExcerpts ?? true,
       requireSourceCitations: config.requireSourceCitations ?? true,
-      maxSourcesPerResponse: config.maxSourcesPerResponse || 5
+      maxSourcesPerResponse: config.maxSourcesPerResponse || 5,
+      enableStructuredResponses: config.enableStructuredResponses ?? usingOllama,
+      useQueryClassification: config.useQueryClassification ?? usingOllama,
+      enforceJsonFormat: config.enforceJsonFormat ?? usingOllama,
+      enablePromptOptimization: config.enablePromptOptimization ?? usingOllama
     };
 
     // Initialize services
@@ -74,6 +90,9 @@ export class RAGService {
     // Log RAG configuration
     const embeddingModel = ('config' in this.embeddingService) ? (this.embeddingService as any).config?.model : 'unknown';
     console.log(`🔍 RAG Service: ${embeddingModel} + ${this.llmService.constructor.name}`);
+    console.log(`   Enhanced features: ${this.config.enableStructuredResponses ? 'Enabled' : 'Disabled'}`);
+    console.log(`   Query classification: ${this.config.useQueryClassification ? 'Enabled' : 'Disabled'}`);
+    console.log(`   JSON format: ${this.config.enforceJsonFormat ? 'Enabled' : 'Disabled'}`);
 
     // Initialize stats
     this.stats = {
@@ -88,9 +107,118 @@ export class RAGService {
   }
 
   /**
-   * Process RAG query - main entry point
+   * Process RAG query with enhanced structured responses
+   * Automatically detects query type and uses optimized prompts
+   */
+  async processEnhancedQuery(request: RAGRequest): Promise<RAGResponse & {
+    queryClassification?: QueryClassification;
+    structuredData?: any;
+    promptType?: string;
+  }> {
+    const startTime = Date.now();
+    
+    try {
+      console.log(`🔍 Enhanced RAG query: "${request.query.substring(0, 100)}${request.query.length > 100 ? '...' : ''}"`);
+      
+      // Step 1: Classify query if enabled
+      let queryClassification: QueryClassification | undefined;
+      if (this.config.useQueryClassification) {
+        queryClassification = promptTemplateManager.classifyQuery(request.query);
+        console.log(`   Query type: ${queryClassification.type} (confidence: ${(queryClassification.confidence * 100).toFixed(1)}%)`);
+      }
+
+      // Step 2: Generate query embedding
+      const embeddingStart = Date.now();
+      const queryEmbedding = await this.generateQueryEmbedding(request.query);
+      const embeddingTime = Date.now() - embeddingStart;
+      
+      // Step 3: Search for relevant chunks
+      const searchStart = Date.now();
+      const searchResults = await this.searchRelevantChunks(
+        queryEmbedding,
+        request.userId,
+        request.documentIds,
+        request.maxResults || this.config.maxSearchResults,
+        request.query
+      );
+      const searchTime = Date.now() - searchStart;
+      
+      // Step 4: Prepare enhanced context
+      const context = this.prepareEnhancedContext(searchResults, queryClassification);
+      
+      // Step 5: Generate structured response
+      const generationStart = Date.now();
+      const llmResponse = await this.generateStructuredResponse(
+        request.query,
+        context,
+        queryClassification,
+        request.responseStyle
+      );
+      const generationTime = Date.now() - generationStart;
+      
+      // Step 6: Format enhanced response
+      const response = this.formatEnhancedRAGResponse(
+        request,
+        llmResponse,
+        searchResults,
+        queryClassification,
+        {
+          searchTime,
+          generationTime,
+          embeddingTime,
+          totalTime: Date.now() - startTime
+        }
+      );
+
+      // Update statistics
+      this.updateStats(response, searchTime, generationTime, true);
+
+      // Save query to database
+      await this.saveQueryToDatabase(request, response);
+
+      console.log(`✅ Enhanced RAG query completed in ${Date.now() - startTime}ms`);
+      console.log(`   Query type: ${queryClassification?.type || 'general'}`);
+      console.log(`   Sources found: ${response.sources.length}`);
+      console.log(`   Confidence: ${(response.confidence * 100).toFixed(1)}%`);
+
+      return {
+        ...response,
+        queryClassification,
+        structuredData: llmResponse.jsonData,
+        promptType: queryClassification?.type || 'general'
+      };
+
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      this.updateStats(null, 0, 0, false);
+      
+      console.error(`❌ Enhanced RAG query failed: ${error instanceof Error ? error.message : error}`);
+      
+      return {
+        response: 'I apologize, but I encountered an error while processing your question. Please try again.',
+        sources: [],
+        confidence: 0,
+        metadata: {
+          processingTime,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }
+      };
+    }
+  }
+
+  /**
+   * Process RAG query - main entry point (backward compatibility)
    */
   async processQuery(request: RAGRequest): Promise<RAGResponse> {
+    // Use enhanced processing if available
+    if (this.config.enableStructuredResponses) {
+      const enhancedResponse = await this.processEnhancedQuery(request);
+      // Return standard response for compatibility
+      const { queryClassification, structuredData, promptType, ...standardResponse } = enhancedResponse;
+      return standardResponse;
+    }
+    
+    // Fall back to original implementation
     const startTime = Date.now();
     
     try {
@@ -202,7 +330,253 @@ export class RAGService {
   }
 
   /**
-   * Prepare context from search results for LLM
+   * Prepare enhanced context with query-type awareness
+   */
+  private prepareEnhancedContext(
+    searchResults: any[],
+    queryClassification?: QueryClassification
+  ): string {
+    if (searchResults.length === 0) {
+      return 'No relevant information found in the documents.';
+    }
+
+    let contextHeader = 'Relevant information from the documents:\n\n';
+    
+    // Adjust context format based on query type
+    if (queryClassification?.type === 'procedural') {
+      contextHeader = 'Procedural information and steps from the documents:\n\n';
+    } else if (queryClassification?.type === 'definitional') {
+      contextHeader = 'Definitions and explanations from the documents:\n\n';
+    } else if (queryClassification?.type === 'analytical') {
+      contextHeader = 'Analytical information for comparison and analysis:\n\n';
+    }
+
+    let context = contextHeader;
+    let tokenCount = 0;
+    const maxTokens = this.config.maxContextTokens;
+
+    for (let i = 0; i < searchResults.length; i++) {
+      const result = searchResults[i];
+      
+      // Enhanced formatting with hierarchy information
+      let excerpt = '';
+      if (queryClassification?.type === 'procedural') {
+        excerpt = `[PROCEDURE SOURCE]\nDocument: ${result.documentName}\nPage: ${result.pageNumber}`;
+        if (result.sectionTitle) excerpt += `\nSection: ${result.sectionTitle}`;
+        excerpt += `\nSimilarity: ${(result.similarityScore * 100).toFixed(1)}%\nContent:\n${result.chunkText}\n\n`;
+      } else if (queryClassification?.type === 'definitional') {
+        excerpt = `[DEFINITION SOURCE]\nDocument: ${result.documentName} (Page ${result.pageNumber})`;
+        if (result.sectionTitle) excerpt += `\n"${result.sectionTitle}"`;
+        excerpt += `\nContent: ${result.chunkText}\n\n`;
+      } else {
+        // Standard format
+        excerpt = `Document: ${result.documentName}\nPage ${result.pageNumber}${result.sectionTitle ? ` - ${result.sectionTitle}` : ''}\nContent: ${result.chunkText}\n\n`;
+      }
+      
+      const excerptTokens = Math.ceil(excerpt.length / 4);
+      
+      if (tokenCount + excerptTokens > maxTokens) {
+        console.log(`✂️ Enhanced context limit: ${tokenCount} tokens (${i} sources)`);
+        break;
+      }
+      
+      context += excerpt;
+      tokenCount += excerptTokens;
+    }
+
+    return context;
+  }
+
+  /**
+   * Generate structured response using query-appropriate prompts
+   */
+  private async generateStructuredResponse(
+    query: string,
+    context: string,
+    queryClassification?: QueryClassification,
+    responseStyle?: string
+  ): Promise<{ text: string; usage: any; jsonData?: any }> {
+    // Use enhanced prompting if classification is available
+    if (this.config.enablePromptOptimization && queryClassification) {
+      const promptConfig = promptTemplateManager.generatePromptConfig(
+        query,
+        context,
+        queryClassification
+      );
+
+      // Optimize prompt length if needed
+      const optimizedPrompt = promptTemplateManager.optimizePromptLength(
+        promptConfig.userPrompt,
+        this.config.maxContextTokens
+      );
+
+      // Try structured JSON generation for Ollama/Mistral
+      if (this.config.enforceJsonFormat && this.llmService instanceof OllamaLLMService) {
+        try {
+          const structuredResponse = await (this.llmService as OllamaLLMService).generateJSONCompletion({
+            prompt: optimizedPrompt,
+            systemPrompt: promptConfig.systemPrompt,
+            maxTokens: promptConfig.maxTokens,
+            temperature: promptConfig.temperature,
+            schema: promptConfig.schema,
+            enforceJsonFormat: true
+          });
+
+          return {
+            text: structuredResponse.text,
+            usage: structuredResponse.usage,
+            jsonData: structuredResponse.jsonData
+          };
+        } catch (error) {
+          console.warn('Structured response failed, falling back to standard:', error);
+          // Fall through to standard generation
+        }
+      }
+
+      // Standard generation with optimized prompts
+      const response = await this.llmService.generateCompletion({
+        prompt: optimizedPrompt,
+        systemPrompt: promptConfig.systemPrompt,
+        maxTokens: promptConfig.maxTokens,
+        temperature: promptConfig.temperature
+      });
+
+      return {
+        text: response.text,
+        usage: response.usage
+      };
+    }
+
+    // Fallback to original method
+    return this.generateResponse(query, context, responseStyle);
+  }
+
+  /**
+   * Format enhanced RAG response with structured data
+   */
+  private formatEnhancedRAGResponse(
+    request: RAGRequest,
+    llmResponse: { text: string; usage: any; jsonData?: any },
+    searchResults: any[],
+    queryClassification?: QueryClassification,
+    timing: { searchTime: number; generationTime: number; embeddingTime: number; totalTime: number }
+  ): RAGResponse {
+    // If we have structured JSON data, use it to enhance the response
+    if (llmResponse.jsonData && this.config.enforceJsonFormat) {
+      return this.formatStructuredResponse(
+        request,
+        llmResponse,
+        searchResults,
+        queryClassification,
+        timing
+      );
+    }
+
+    // Use standard formatting with enhanced metadata
+    const standardResponse = this.formatRAGResponse(request, llmResponse, searchResults, timing);
+    
+    // Add query classification metadata
+    if (queryClassification) {
+      standardResponse.metadata = {
+        ...standardResponse.metadata,
+        queryType: queryClassification.type,
+        queryConfidence: queryClassification.confidence
+      };
+    }
+
+    return standardResponse;
+  }
+
+  /**
+   * Format response from structured JSON data
+   */
+  private formatStructuredResponse(
+    request: RAGRequest,
+    llmResponse: { text: string; usage: any; jsonData: any },
+    searchResults: any[],
+    queryClassification?: QueryClassification,
+    timing: { searchTime: number; generationTime: number; embeddingTime: number; totalTime: number }
+  ): RAGResponse {
+    const jsonData = llmResponse.jsonData;
+
+    // Extract sources from structured data or search results
+    let sources: SourceReference[] = [];
+    
+    if (jsonData.citations && Array.isArray(jsonData.citations)) {
+      sources = jsonData.citations.map((citation: any) => ({
+        documentId: this.findDocumentIdByName(citation.source, searchResults),
+        documentName: citation.source,
+        pageNumber: citation.page,
+        sectionTitle: citation.section,
+        similarityScore: this.findSimilarityScore(citation, searchResults)
+      }));
+    } else {
+      // Fall back to search results
+      sources = searchResults.slice(0, this.config.maxSourcesPerResponse).map(result => ({
+        documentId: result.documentId,
+        documentName: result.documentName,
+        pageNumber: result.pageNumber,
+        sectionTitle: result.sectionTitle,
+        excerpt: this.config.includeSourceExcerpts ? this.extractExcerpt(result.chunkText) : undefined,
+        similarityScore: result.similarityScore
+      }));
+    }
+
+    // Use structured confidence or calculate it
+    const confidence = jsonData.confidence || this.calculateConfidence(searchResults, llmResponse.text);
+
+    // Build enhanced response text
+    let responseText = jsonData.answer || llmResponse.text;
+    
+    // Add structured steps for procedural responses
+    if (jsonData.steps && Array.isArray(jsonData.steps) && jsonData.steps.length > 0) {
+      responseText += '\n\nSteps:\n';
+      jsonData.steps.forEach((step: string, index: number) => {
+        responseText += `${index + 1}. ${step}\n`;
+      });
+    }
+
+    return {
+      response: responseText,
+      sources,
+      confidence,
+      metadata: {
+        processingTime: timing.totalTime,
+        searchTime: timing.searchTime,
+        generationTime: timing.generationTime,
+        embeddingTime: timing.embeddingTime,
+        tokensUsed: llmResponse.usage.totalTokens,
+        sourcesFound: searchResults.length,
+        model: this.llmService.constructor.name,
+        queryType: queryClassification?.type,
+        queryConfidence: queryClassification?.confidence,
+        structuredResponse: true,
+        sectionsReferenced: jsonData.sections
+      }
+    };
+  }
+
+  /**
+   * Helper method to find document ID by name
+   */
+  private findDocumentIdByName(documentName: string, searchResults: any[]): string {
+    const match = searchResults.find(result => result.documentName === documentName);
+    return match?.documentId || 'unknown';
+  }
+
+  /**
+   * Helper method to find similarity score for a citation
+   */
+  private findSimilarityScore(citation: any, searchResults: any[]): number {
+    const match = searchResults.find(result => 
+      result.documentName === citation.source && 
+      result.pageNumber === citation.page
+    );
+    return match?.similarityScore || 0.8; // Default similarity
+  }
+
+  /**
+   * Prepare context from search results for LLM (backward compatibility)
    */
   private prepareContext(searchResults: any[]): string {
     if (searchResults.length === 0) {

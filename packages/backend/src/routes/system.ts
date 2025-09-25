@@ -161,6 +161,455 @@ router.get('/config',
 );
 
 /**
+ * Debug LLM service creation and execution
+ * GET /api/system/debug/llm
+ */
+router.get('/debug/llm',
+  asyncHandler(async (req: Request, res: Response) => {
+    console.log('🔧 Debugging LLM service creation...');
+
+    const debugInfo: any = {
+      timestamp: new Date().toISOString(),
+      environment: {
+        LLM_PROVIDER: process.env.LLM_PROVIDER,
+        OLLAMA_LLM_MODEL: process.env.OLLAMA_LLM_MODEL,
+        OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL,
+        LLM_MODEL: process.env.LLM_MODEL,
+        NODE_ENV: process.env.NODE_ENV
+      },
+      steps: []
+    };
+
+    try {
+      // Step 1: Create LLM service
+      debugInfo.steps.push('Creating LLM service from factory');
+      const llmFactory = LLMServiceFactory.getInstance();
+      const llmService = llmFactory.createLLMService();
+      
+      debugInfo.steps.push(`LLM service created: ${llmService.constructor.name}`);
+      debugInfo.serviceType = llmService.constructor.name;
+
+      // Step 2: Test connection
+      debugInfo.steps.push('Testing service connection');
+      const connectionTest = await llmService.testConnection();
+      debugInfo.connectionTest = connectionTest;
+      
+      if (!connectionTest) {
+        debugInfo.steps.push('❌ Connection test failed');
+        return res.json({
+          success: false,
+          debug: debugInfo,
+          error: 'Connection test failed'
+        });
+      }
+
+      debugInfo.steps.push('✅ Connection test passed');
+
+      // Step 3: Try simple completion
+      debugInfo.steps.push('Attempting simple completion');
+      try {
+        const completionResult = await llmService.generateCompletion({
+          prompt: 'What is 2+2? Answer briefly.',
+          maxTokens: 10
+        });
+
+        debugInfo.completionResult = {
+          success: true,
+          text: completionResult.text,
+          textLength: completionResult.text?.length || 0,
+          usage: completionResult.usage,
+          model: completionResult.model
+        };
+        debugInfo.steps.push('✅ Completion successful');
+
+      } catch (completionError) {
+        debugInfo.completionResult = {
+          success: false,
+          error: completionError instanceof Error ? completionError.message : String(completionError),
+          errorType: typeof completionError,
+          errorStack: completionError instanceof Error ? completionError.stack : undefined,
+          errorDetails: {
+            isUndefined: completionError === undefined,
+            isNull: completionError === null,
+            valueOf: typeof completionError?.valueOf === 'function' ? completionError.valueOf() : 'no valueOf',
+            toString: typeof completionError?.toString === 'function' ? completionError.toString() : 'no toString'
+          }
+        };
+        debugInfo.steps.push(`❌ Completion failed: ${completionError instanceof Error ? completionError.message : String(completionError)}`);
+      }
+
+      // Step 4: Try direct Ollama API call to verify it works
+      debugInfo.steps.push('Testing direct Ollama API call for comparison');
+      try {
+        const directResponse = await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'mistral:7b-instruct',
+            prompt: 'What is 2+2? Answer briefly.',
+            options: { num_predict: 10, temperature: 0.7 },
+            stream: false
+          })
+        });
+
+        if (directResponse.ok) {
+          const directData = await directResponse.json();
+          debugInfo.directApiTest = {
+            success: true,
+            response: directData.response,
+            responseLength: directData.response?.length || 0
+          };
+          debugInfo.steps.push('✅ Direct API call successful');
+        } else {
+          debugInfo.directApiTest = {
+            success: false,
+            status: directResponse.status,
+            statusText: directResponse.statusText
+          };
+          debugInfo.steps.push(`❌ Direct API call failed: ${directResponse.status}`);
+        }
+      } catch (directError) {
+        debugInfo.directApiTest = {
+          success: false,
+          error: directError instanceof Error ? directError.message : String(directError)
+        };
+        debugInfo.steps.push(`❌ Direct API call error: ${directError instanceof Error ? directError.message : String(directError)}`);
+      }
+
+      res.json({
+        success: true,
+        debug: debugInfo
+      });
+
+    } catch (error) {
+      debugInfo.steps.push(`❌ Debug failed: ${error instanceof Error ? error.message : String(error)}`);
+      debugInfo.error = {
+        message: error instanceof Error ? error.message : String(error),
+        type: typeof error,
+        stack: error instanceof Error ? error.stack : undefined
+      };
+
+      res.json({
+        success: false,
+        debug: debugInfo
+      });
+    }
+  })
+);
+
+/**
+ * Debug Ollama generate method directly
+ * GET /api/system/debug/ollama-direct
+ */
+router.get('/debug/ollama-direct',
+  asyncHandler(async (req: Request, res: Response) => {
+    console.log('🔧 Testing Ollama generate method directly...');
+
+    const debugInfo: any = {
+      timestamp: new Date().toISOString(),
+      steps: []
+    };
+
+    try {
+      // Step 1: Create OllamaLLMService
+      debugInfo.steps.push('Creating OllamaLLMService directly');
+      const { OllamaLLMService } = await import('../services/llm/OllamaLLMService');
+      
+      const service = new OllamaLLMService({
+        baseUrl: 'http://localhost:11434',
+        model: 'mistral:7b-instruct'
+      });
+      
+      debugInfo.steps.push('Service created');
+      debugInfo.serviceInfo = {
+        constructor: service.constructor.name,
+        baseUrl: (service as any).baseUrl,
+        model: (service as any).config?.model
+      };
+
+      // Step 2: Test the private method by accessing it
+      debugInfo.steps.push('Attempting to call callOllamaGenerate directly');
+      
+      try {
+        // We need to access the private method somehow
+        const callOllamaGenerate = (service as any).callOllamaGenerate.bind(service);
+        
+        const testRequest = {
+          prompt: 'What is 2+2? Answer briefly.',
+          maxTokens: 10
+        };
+        
+        debugInfo.steps.push('Calling callOllamaGenerate...');
+        const result = await callOllamaGenerate(testRequest, false);
+        
+        debugInfo.callOllamaGenerateResult = {
+          success: true,
+          response: result.response,
+          responseLength: result.response?.length || 0,
+          done: result.done,
+          keys: Object.keys(result || {})
+        };
+        debugInfo.steps.push('✅ callOllamaGenerate succeeded');
+        
+      } catch (directError) {
+        debugInfo.callOllamaGenerateResult = {
+          success: false,
+          error: directError instanceof Error ? directError.message : String(directError),
+          errorType: typeof directError,
+          isUndefined: directError === undefined,
+          isNull: directError === null
+        };
+        debugInfo.steps.push(`❌ callOllamaGenerate failed: ${directError instanceof Error ? directError.message : String(directError)}`);
+      }
+
+      // Step 3: Test withRetry mechanism with a simple function
+      debugInfo.steps.push('Testing withRetry with simple function');
+      try {
+        const withRetry = (service as any).withRetry.bind(service);
+        
+        const simpleResult = await withRetry(
+          async () => {
+            return { test: 'success', value: 42 };
+          },
+          'Simple test function'
+        );
+        
+        debugInfo.withRetryTest = {
+          success: true,
+          result: simpleResult
+        };
+        debugInfo.steps.push('✅ withRetry with simple function succeeded');
+        
+      } catch (retryError) {
+        debugInfo.withRetryTest = {
+          success: false,
+          error: retryError instanceof Error ? retryError.message : String(retryError),
+          errorType: typeof retryError
+        };
+        debugInfo.steps.push(`❌ withRetry test failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+      }
+
+      // Step 4: Test withRetry with callOllamaGenerate (the actual problematic combination)
+      debugInfo.steps.push('Testing withRetry + callOllamaGenerate combination');
+      try {
+        const withRetry = (service as any).withRetry.bind(service);
+        const callOllamaGenerate = (service as any).callOllamaGenerate.bind(service);
+        
+        const testRequest = {
+          prompt: 'What is 2+2? Answer briefly.',
+          maxTokens: 10
+        };
+        
+        // Test the exact pattern used in generateCompletion
+        const combinedResult = await withRetry(
+          () => callOllamaGenerate(testRequest, false),
+          `Generate completion for ${testRequest.prompt.length} char prompt`
+        );
+        
+        debugInfo.combinedTest = {
+          success: true,
+          response: combinedResult.response,
+          responseLength: combinedResult.response?.length || 0
+        };
+        debugInfo.steps.push('✅ withRetry + callOllamaGenerate succeeded');
+        
+      } catch (combinedError) {
+        debugInfo.combinedTest = {
+          success: false,
+          error: combinedError instanceof Error ? combinedError.message : String(combinedError),
+          errorType: typeof combinedError,
+          isUndefined: combinedError === undefined,
+          isNull: combinedError === null,
+          errorStack: combinedError instanceof Error ? combinedError.stack : undefined
+        };
+        debugInfo.steps.push(`❌ withRetry + callOllamaGenerate failed: ${combinedError instanceof Error ? combinedError.message : String(combinedError)}`);
+      }
+
+      // Step 5: Test the exact arrow function pattern
+      debugInfo.steps.push('Testing exact arrow function pattern from generateCompletion');
+      try {
+        const withRetry = (service as any).withRetry.bind(service);
+        
+        const testRequest = {
+          prompt: 'What is 2+2? Answer briefly.',
+          maxTokens: 10
+        };
+        
+        // This is the EXACT pattern from generateCompletion
+        const arrowFunctionResult = await withRetry(
+          () => service.callOllamaGenerate(testRequest, false),
+          `Generate completion for ${testRequest.prompt.length} char prompt`
+        );
+        
+        debugInfo.arrowFunctionTest = {
+          success: true,
+          response: arrowFunctionResult.response,
+          responseLength: arrowFunctionResult.response?.length || 0
+        };
+        debugInfo.steps.push('✅ Arrow function pattern succeeded');
+        
+      } catch (arrowError) {
+        debugInfo.arrowFunctionTest = {
+          success: false,
+          error: arrowError instanceof Error ? arrowError.message : String(arrowError),
+          errorType: typeof arrowError,
+          isUndefined: arrowError === undefined,
+          isNull: arrowError === null,
+          errorStack: arrowError instanceof Error ? arrowError.stack : undefined
+        };
+        debugInfo.steps.push(`❌ Arrow function pattern failed: ${arrowError instanceof Error ? arrowError.message : String(arrowError)}`);
+      }
+
+      res.json({
+        success: true,
+        debug: debugInfo
+      });
+
+    } catch (error) {
+      debugInfo.steps.push(`❌ Debug failed: ${error instanceof Error ? error.message : String(error)}`);
+      debugInfo.error = {
+        message: error instanceof Error ? error.message : String(error),
+        type: typeof error,
+        stack: error instanceof Error ? error.stack : undefined
+      };
+
+      res.json({
+        success: false,
+        debug: debugInfo
+      });
+    }
+  })
+);
+
+/**
+ * Compare factory vs direct service creation
+ * GET /api/system/debug/factory-comparison
+ */
+router.get('/debug/factory-comparison',
+  asyncHandler(async (req: Request, res: Response) => {
+    console.log('🔧 Comparing factory vs direct service creation...');
+
+    const debugInfo: any = {
+      timestamp: new Date().toISOString(),
+      steps: []
+    };
+
+    try {
+      // Test 1: Factory-created service
+      debugInfo.steps.push('Creating service via factory');
+      const factoryService = LLMServiceFactory.getInstance().createLLMService();
+      
+      debugInfo.factoryService = {
+        constructor: factoryService.constructor.name,
+        config: (factoryService as any).config,
+        baseUrl: (factoryService as any).baseUrl
+      };
+
+      debugInfo.steps.push('Testing factory service completion');
+      try {
+        const factoryResult = await factoryService.generateCompletion({
+          prompt: 'What is 2+2?',
+          maxTokens: 10
+        });
+        
+        debugInfo.factoryTest = {
+          success: true,
+          text: factoryResult.text,
+          usage: factoryResult.usage
+        };
+        debugInfo.steps.push('✅ Factory service completion succeeded');
+        
+      } catch (factoryError) {
+        debugInfo.factoryTest = {
+          success: false,
+          error: factoryError instanceof Error ? factoryError.message : String(factoryError),
+          errorType: typeof factoryError
+        };
+        debugInfo.steps.push(`❌ Factory service completion failed: ${factoryError instanceof Error ? factoryError.message : String(factoryError)}`);
+      }
+
+      // Test 2: Direct service creation
+      debugInfo.steps.push('Creating service directly');
+      const { OllamaLLMService } = await import('../services/llm/OllamaLLMService');
+      const directService = new OllamaLLMService({
+        baseUrl: 'http://localhost:11434',
+        model: 'mistral:7b-instruct'
+      });
+      
+      debugInfo.directService = {
+        constructor: directService.constructor.name,
+        config: (directService as any).config,
+        baseUrl: (directService as any).baseUrl
+      };
+
+      debugInfo.steps.push('Testing direct service completion');
+      try {
+        const directResult = await directService.generateCompletion({
+          prompt: 'What is 2+2?',
+          maxTokens: 10
+        });
+        
+        debugInfo.directTest = {
+          success: true,
+          text: directResult.text,
+          usage: directResult.usage
+        };
+        debugInfo.steps.push('✅ Direct service completion succeeded');
+        
+      } catch (directError) {
+        debugInfo.directTest = {
+          success: false,
+          error: directError instanceof Error ? directError.message : String(directError),
+          errorType: typeof directError
+        };
+        debugInfo.steps.push(`❌ Direct service completion failed: ${directError instanceof Error ? directError.message : String(directError)}`);
+      }
+
+      // Compare configurations
+      debugInfo.configComparison = {
+        sameType: debugInfo.factoryService.constructor === debugInfo.directService.constructor,
+        sameBaseUrl: debugInfo.factoryService.baseUrl === debugInfo.directService.baseUrl,
+        factoryConfigKeys: Object.keys(debugInfo.factoryService.config || {}),
+        directConfigKeys: Object.keys(debugInfo.directService.config || {}),
+        configDifferences: {}
+      };
+
+      // Find differences in config
+      const factoryConfig = debugInfo.factoryService.config || {};
+      const directConfig = debugInfo.directService.config || {};
+      const allKeys = [...new Set([...Object.keys(factoryConfig), ...Object.keys(directConfig)])];
+      
+      allKeys.forEach(key => {
+        if (factoryConfig[key] !== directConfig[key]) {
+          debugInfo.configComparison.configDifferences[key] = {
+            factory: factoryConfig[key],
+            direct: directConfig[key]
+          };
+        }
+      });
+
+      res.json({
+        success: true,
+        debug: debugInfo
+      });
+
+    } catch (error) {
+      debugInfo.steps.push(`❌ Debug failed: ${error instanceof Error ? error.message : String(error)}`);
+      debugInfo.error = {
+        message: error instanceof Error ? error.message : String(error),
+        type: typeof error,
+        stack: error instanceof Error ? error.stack : undefined
+      };
+
+      res.json({
+        success: false,
+        debug: debugInfo
+      });
+    }
+  })
+);
+
+/**
  * Test all system components end-to-end
  * GET /api/system/test
  */
@@ -448,15 +897,15 @@ function getSystemConfiguration() {
   return {
     environment: process.env.NODE_ENV || 'development',
     version: process.env.npm_package_version || '1.0.0',
-    embeddingProvider: process.env.EMBEDDING_PROVIDER || 'ollama',
-    llmProvider: process.env.LLM_PROVIDER || 'ollama',
-    embeddingModel: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
-    llmModel: process.env.LLM_MODEL || 'mistral',
-    chunkSizeTokens: process.env.CHUNK_SIZE_TOKENS || '600',
-    chunkOverlapTokens: process.env.CHUNK_OVERLAP_TOKENS || '100',
-    maxFileSizeMB: process.env.MAX_FILE_SIZE_MB || '100',
-    ragMaxSearchResults: process.env.RAG_MAX_SEARCH_RESULTS || '10',
-    ragSimilarityThreshold: process.env.RAG_SIMILARITY_THRESHOLD || '0.65',
+    embeddingProvider: process.env.EMBEDDING_PROVIDER || 'not configured',
+    llmProvider: process.env.LLM_PROVIDER || 'not configured',
+    embeddingModel: process.env.EMBEDDING_MODEL || 'not configured',
+    llmModel: process.env.OLLAMA_LLM_MODEL || process.env.OPENAI_LLM_MODEL || 'not configured',
+    chunkSizeTokens: process.env.CHUNK_SIZE_TOKENS || 'not configured',
+    chunkOverlapTokens: process.env.CHUNK_OVERLAP_TOKENS || 'not configured',
+    maxFileSizeMB: process.env.MAX_FILE_SIZE_MB || 'not configured',
+    ragMaxSearchResults: process.env.RAG_MAX_SEARCH_RESULTS || 'not configured',
+    ragSimilarityThreshold: process.env.RAG_SIMILARITY_THRESHOLD || 'not configured',
     database: {
       url: process.env.SUPABASE_URL ? `${process.env.SUPABASE_URL.substring(0, 20)}...` : 'Not configured',
       hasKey: !!process.env.SUPABASE_ANON_KEY

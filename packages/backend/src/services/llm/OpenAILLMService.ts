@@ -29,9 +29,19 @@ export class OpenAILLMService extends LLMService {
   
   constructor(config: Partial<OpenAILLMConfig> = {}) {
     const baseConfig = LLM_CONFIGS.openai;
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY environment variable is required');
+    }
+    
+    const model = process.env.OPENAI_LLM_MODEL;
+    if (!model) {
+      throw new Error('OPENAI_LLM_MODEL environment variable is required');
+    }
+    
     const envConfig = {
-      apiKey: process.env.OPENAI_API_KEY || '',
-      model: process.env.OPENAI_LLM_MODEL || 'gpt-3.5-turbo'
+      apiKey,
+      model
     };
     
     const defaultConfig = {

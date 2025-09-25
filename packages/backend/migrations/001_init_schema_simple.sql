@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS user_documents (
     processing_completed_at TIMESTAMP WITH TIME ZONE,
     total_pages INTEGER DEFAULT 0,
     total_chunks INTEGER DEFAULT 0,
-    embedding_model VARCHAR(100) NOT NULL DEFAULT 'nomic-embed-text',
+    embedding_model VARCHAR(100) NOT NULL,
     error_message TEXT,
     tags TEXT[] DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     page_position_end INTEGER DEFAULT 0,
     section_title VARCHAR(500),
     embedding vector(768), -- nomic-embed-text dimension
-    embedding_model VARCHAR(100) NOT NULL DEFAULT 'nomic-embed-text',
+    embedding_model VARCHAR(100) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

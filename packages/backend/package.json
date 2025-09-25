@@ -17,6 +17,7 @@
     "test:runner": "tsx src/tests/runner.ts",
     "test:rag": "tsx src/tests/rag-end-to-end.test.ts",
     "test:api": "tsx src/tests/api-integration.test.ts",
+    "test:mistral": "tsx src/scripts/test-mistral-pipeline.ts",
     "test": "npm run test:runner"
   },
   "dependencies": {

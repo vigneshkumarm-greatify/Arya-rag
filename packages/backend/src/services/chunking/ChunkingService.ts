@@ -16,12 +16,37 @@ import {
   getTokenStats 
 } from '../../utils/tokenCounter';
 
+/**
+ * Section header patterns for hierarchical documents
+ */
+export const SECTION_PATTERNS = {
+  // Standard hierarchical numbering (1, 1.1, 1.1.1, etc.)
+  HIERARCHICAL: /^(\d+(?:\.\d+){0,5})\s+(.+)/,
+  
+  // Chapter patterns
+  CHAPTER: /^(?:chapter|ch\.?)\s+(\d+)[\s:]+(.+)/i,
+  
+  // Appendix patterns
+  APPENDIX: /^(?:appendix|app\.?)\s+([a-z])\s+(.+)/i,
+  
+  // Section with letters (A, B, C, etc.)
+  LETTER_SECTION: /^([a-z])\.\s+(.+)/i,
+  
+  // Roman numerals (I, II, III, etc.)
+  ROMAN: /^([ivx]+)\.\s+(.+)/i,
+  
+  // Procedure steps (STEP 1, Step 2, etc.)
+  STEP: /^(?:step)\s+(\d+)[\s:]+(.+)/i
+};
+
 export interface ChunkingOptions {
   chunkSizeTokens: number;        // Target size for each chunk (default: 600)
   chunkOverlapTokens: number;     // Overlap between chunks (default: 100)
   preservePageBoundaries: boolean; // Never split across pages (default: true)
   preserveSentences: boolean;      // Try to keep sentences intact (default: true)
   includeMetadata: boolean;        // Include section titles and metadata (default: true)
+  detectSectionHeaders: boolean;   // Detect and preserve section headers (default: true)
+  enhancedMetadata: boolean;       // Include enhanced metadata extraction (default: true)
 }
 
 export interface ChunkingResult {
@@ -34,11 +59,13 @@ export interface ChunkingResult {
 
 export class ChunkingService {
   private readonly defaultOptions: ChunkingOptions = {
-    chunkSizeTokens: 600,
-    chunkOverlapTokens: 100,
+    chunkSizeTokens: process.env.CHUNK_SIZE_TOKENS ? parseInt(process.env.CHUNK_SIZE_TOKENS) : 800,
+    chunkOverlapTokens: process.env.CHUNK_OVERLAP_TOKENS ? parseInt(process.env.CHUNK_OVERLAP_TOKENS) : 150,
     preservePageBoundaries: true,
     preserveSentences: true,
-    includeMetadata: true
+    includeMetadata: true,
+    detectSectionHeaders: true,
+    enhancedMetadata: true
   };
 
   /**
@@ -111,7 +138,7 @@ export class ChunkingService {
    * @param config - Chunking configuration
    * @returns Array of chunks for this page
    */
-  private async chunkPage(
+  protected async chunkPage(
     page: PageContent,
     documentId: string,
     startIndex: number,
@@ -124,16 +151,29 @@ export class ChunkingService {
       return chunks;
     }
 
+    // Detect section headers if enabled
+    let detectedSections: Array<{number: string; title: string; line: number; type: string}> = [];
+    let enhancedSectionTitle = page.sectionTitle;
+    
+    if (config.detectSectionHeaders) {
+      detectedSections = this.detectSectionHeaders(page.text);
+      if (detectedSections.length > 0 && !enhancedSectionTitle) {
+        enhancedSectionTitle = `${detectedSections[0].number} ${detectedSections[0].title}`;
+      }
+    }
+
     // If the entire page fits in one chunk, return it as is
     if (isWithinTokenLimit(page.text, config.chunkSizeTokens)) {
-      chunks.push(this.createChunk(
+      chunks.push(this.createEnhancedChunk(
         page.text,
         documentId,
         page.pageNumber,
         startIndex,
         0,
         page.text.length,
-        page.sectionTitle
+        enhancedSectionTitle,
+        config,
+        detectedSections
       ));
       return chunks;
     }
@@ -182,14 +222,16 @@ export class ChunkingService {
       // Create the chunk
       chunkText += finalContent;
       
-      chunks.push(this.createChunk(
+      chunks.push(this.createEnhancedChunk(
         chunkText.trim(),
         documentId,
         page.pageNumber,
         chunkIndex,
         currentPosition,
         currentPosition + finalContent.length,
-        page.sectionTitle
+        enhancedSectionTitle,
+        config,
+        detectedSections
       ));
 
       // Update for next iteration
@@ -238,6 +280,124 @@ export class ChunkingService {
   }
 
   /**
+   * Detect section headers in text content
+   * 
+   * @param text - Text content to analyze
+   * @returns Array of detected section information
+   */
+  private detectSectionHeaders(text: string): Array<{
+    number: string;
+    title: string;
+    line: number;
+    type: string;
+  }> {
+    const sections: Array<{ number: string; title: string; line: number; type: string }> = [];
+    const lines = text.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.length === 0) continue;
+
+      // Check against section patterns
+      for (const [patternType, pattern] of Object.entries(SECTION_PATTERNS)) {
+        const match = pattern.exec(line);
+        if (match) {
+          sections.push({
+            number: match[1],
+            title: match[2].trim(),
+            line: i,
+            type: patternType.toLowerCase()
+          });
+          break;
+        }
+      }
+    }
+
+    return sections;
+  }
+
+  /**
+   * Extract enhanced metadata from chunk content
+   * 
+   * @param content - Chunk text content
+   * @returns Enhanced metadata object
+   */
+  private extractEnhancedMetadata(content: string): {
+    containsProcedure: boolean;
+    containsSteps: boolean;
+    containsDefinition: boolean;
+    crossReferences: string[];
+    sectionNumbers: string[];
+  } {
+    const metadata = {
+      containsProcedure: false,
+      containsSteps: false,
+      containsDefinition: false,
+      crossReferences: [] as string[],
+      sectionNumbers: [] as string[]
+    };
+
+    // Detect procedures
+    const procedurePatterns = [
+      /procedure\s*:/i,
+      /steps?\s*:/i,
+      /instructions?\s*:/i,
+      /to\s+(perform|complete|execute)/i
+    ];
+    metadata.containsProcedure = procedurePatterns.some(pattern => pattern.test(content));
+
+    // Detect steps
+    const stepPatterns = [
+      /(?:^|\n)\s*(?:\d+[\.)]\s+|step\s+\d+|[a-z][\.)]\s+)/i,
+      /(?:first|second|third|next|then|finally)/i,
+      /(?:^|\n)\s*[-*•]\s+/
+    ];
+    metadata.containsSteps = stepPatterns.some(pattern => pattern.test(content));
+
+    // Detect definitions
+    const definitionPatterns = [
+      /is\s+defined\s+as/i,
+      /means\s+/i,
+      /refers\s+to/i,
+      /:\s*the\s+/i,
+      /definition\s*:/i
+    ];
+    metadata.containsDefinition = definitionPatterns.some(pattern => pattern.test(content));
+
+    // Extract cross-references
+    const crossRefPatterns = [
+      /(?:see|refer to|reference|chapter|section|appendix|paragraph)\s+(\d+(?:\.\d+)*)/gi,
+      /\((?:ref|see)\s+([^)]+)\)/gi,
+      /(?:page|p\.)\s+(\d+)/gi
+    ];
+
+    for (const pattern of crossRefPatterns) {
+      const matches = content.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1]) {
+          metadata.crossReferences.push(match[1].trim());
+        }
+      }
+    }
+
+    // Extract section numbers
+    for (const [patternType, pattern] of Object.entries(SECTION_PATTERNS)) {
+      const matches = content.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1]) {
+          metadata.sectionNumbers.push(match[1]);
+        }
+      }
+    }
+
+    // Remove duplicates
+    metadata.crossReferences = [...new Set(metadata.crossReferences)];
+    metadata.sectionNumbers = [...new Set(metadata.sectionNumbers)];
+
+    return metadata;
+  }
+
+  /**
    * Create a DocumentChunk with all metadata
    * 
    * @param content - The chunk text content
@@ -249,7 +409,7 @@ export class ChunkingService {
    * @param sectionTitle - Optional section title
    * @returns Formatted DocumentChunk
    */
-  private createChunk(
+  protected createChunk(
     content: string,
     documentId: string,
     pageNumber: number,
@@ -279,6 +439,59 @@ export class ChunkingService {
       embeddingModel: '', // Will be set when embeddings are generated
       createdAt: new Date().toISOString()
     };
+  }
+
+  /**
+   * Create an enhanced DocumentChunk with section detection and metadata
+   * 
+   * @param content - The chunk text content
+   * @param documentId - Document identifier
+   * @param pageNumber - Page number for citation
+   * @param chunkIndex - Chunk index in document
+   * @param startPos - Starting character position in page
+   * @param endPos - Ending character position in page
+   * @param sectionTitle - Optional section title
+   * @param config - Chunking configuration
+   * @param detectedSections - Array of detected sections
+   * @returns Enhanced DocumentChunk with metadata
+   */
+  private createEnhancedChunk(
+    content: string,
+    documentId: string,
+    pageNumber: number,
+    chunkIndex: number,
+    startPos: number,
+    endPos: number,
+    sectionTitle: string | undefined,
+    config: ChunkingOptions,
+    detectedSections: Array<{number: string; title: string; line: number; type: string}>
+  ): DocumentChunk {
+    // Create base chunk
+    const baseChunk = this.createChunk(
+      content,
+      documentId,
+      pageNumber,
+      chunkIndex,
+      startPos,
+      endPos,
+      sectionTitle
+    );
+
+    // Add enhanced metadata if enabled
+    if (config.enhancedMetadata) {
+      const enhancedMetadata = this.extractEnhancedMetadata(content);
+      
+      // Store enhanced metadata in the chunk (could extend DocumentChunk interface in future)
+      (baseChunk as any).enhancedMetadata = {
+        ...enhancedMetadata,
+        detectedSections: detectedSections.filter(section => {
+          // Only include sections that appear in this chunk
+          return content.includes(section.number) || content.includes(section.title.substring(0, 20));
+        })
+      };
+    }
+
+    return baseChunk;
   }
 
   /**

@@ -157,21 +157,12 @@ export class EmbeddingServiceFactory {
    * Get default model for a provider - now uses unified EMBEDDING_MODEL
    */
   private getDefaultModel(provider: EmbeddingProvider): string {
-    // Use unified EMBEDDING_MODEL env var first
+    // Use unified EMBEDDING_MODEL env var - required
     const modelFromEnv = process.env.EMBEDDING_MODEL;
-    if (modelFromEnv) {
-      return modelFromEnv;
+    if (!modelFromEnv) {
+      throw new Error('EMBEDDING_MODEL environment variable is required');
     }
-
-    // Fallback to provider-specific defaults
-    switch (provider) {
-      case 'ollama':
-        return process.env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text';
-      case 'openai':
-        return process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
-      default:
-        throw new Error(`Unknown provider: ${provider}`);
-    }
+    return modelFromEnv;
   }
 
   /**

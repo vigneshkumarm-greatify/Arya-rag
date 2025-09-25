@@ -89,11 +89,11 @@ export class LLMServiceFactory {
     const ollamaConfig: Partial<OllamaLLMConfig> = {
       baseUrl: config.ollamaBaseUrl,
       model: config.model,
-      maxTokens: config.maxTokens,
-      temperature: config.temperature,
-      maxRetries: config.maxRetries,
-      retryDelayMs: config.retryDelayMs,
-      timeoutMs: config.timeoutMs
+      maxTokens: config.maxTokens || 4096,
+      temperature: config.temperature || 0.7,
+      maxRetries: config.maxRetries || 3,
+      retryDelayMs: config.retryDelayMs || 2000,
+      timeoutMs: config.timeoutMs || 30000
     };
 
     return new OllamaLLMService(ollamaConfig);
@@ -161,9 +161,17 @@ export class LLMServiceFactory {
   private getDefaultModel(provider: LLMProvider): string {
     switch (provider) {
       case 'ollama':
-        return process.env.OLLAMA_LLM_MODEL || 'mistral';
+        const ollamaModel = process.env.OLLAMA_LLM_MODEL;
+        if (!ollamaModel) {
+          throw new Error('OLLAMA_LLM_MODEL environment variable is required when using ollama provider');
+        }
+        return ollamaModel;
       case 'openai':
-        return process.env.OPENAI_LLM_MODEL || 'gpt-3.5-turbo';
+        const openaiModel = process.env.OPENAI_LLM_MODEL;
+        if (!openaiModel) {
+          throw new Error('OPENAI_LLM_MODEL environment variable is required when using openai provider');
+        }
+        return openaiModel;
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }

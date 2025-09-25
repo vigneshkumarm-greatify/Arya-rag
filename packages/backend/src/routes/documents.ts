@@ -147,7 +147,7 @@ router.post('/upload',
       processing_completed_at: null,
       total_pages: 0,
       total_chunks: 0,
-      embedding_model: process.env.EMBEDDING_MODEL || (process.env.EMBEDDING_PROVIDER === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text'),
+      embedding_model: process.env.EMBEDDING_MODEL,
       tags: tags || [],
       // Storage information
       storage_path: uploadResult.filePath,
@@ -791,7 +791,7 @@ async function processDocumentInBackground(
     // Get the actual model name from the first embedding response
     const actualModelName = chunksWithEmbeddings.length > 0 && chunksWithEmbeddings[0].embeddingResponse?.model 
       ? chunksWithEmbeddings[0].embeddingResponse.model 
-      : (process.env.EMBEDDING_MODEL || (process.env.EMBEDDING_PROVIDER === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text'));
+      : process.env.EMBEDDING_MODEL;
     
     console.log(`🤖 Storing with embedding model: ${actualModelName}`);
     

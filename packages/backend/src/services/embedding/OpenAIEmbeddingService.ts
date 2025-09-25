@@ -32,11 +32,26 @@ export class OpenAIEmbeddingService extends EmbeddingService {
   private readonly costPerToken: number;
   
   constructor(config: Partial<OpenAIEmbeddingConfig> = {}) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey && !config.apiKey) {
+      throw new Error('OPENAI_API_KEY environment variable is required');
+    }
+    
+    const model = process.env.EMBEDDING_MODEL;
+    if (!model && !config.model) {
+      throw new Error('EMBEDDING_MODEL environment variable is required');
+    }
+    
+    const dimensions = process.env.EMBEDDING_DIMENSIONS;
+    if (!dimensions && !config.dimensions) {
+      throw new Error('EMBEDDING_DIMENSIONS environment variable is required');
+    }
+    
     const defaultConfig = {
       ...EMBEDDING_CONFIGS.openai,
-      apiKey: process.env.OPENAI_API_KEY || '',
-      model: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
-      dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '768'),
+      apiKey: config.apiKey || apiKey,
+      model: config.model || model,
+      dimensions: config.dimensions || parseInt(dimensions!),
       maxBatchSize: 100,
       maxRetries: 5,
       retryDelayMs: 2000,
@@ -44,10 +59,6 @@ export class OpenAIEmbeddingService extends EmbeddingService {
     } as OpenAIEmbeddingConfig;
 
     super({ ...defaultConfig, ...config });
-    
-    if (!config.apiKey && !process.env.OPENAI_API_KEY) {
-      throw new Error('OpenAI API key is required. Set OPENAI_API_KEY environment variable.');
-    }
 
     // Prevent usage of incompatible models with 768-dimension setup
     if (this.config.model === 'text-embedding-ada-002') {

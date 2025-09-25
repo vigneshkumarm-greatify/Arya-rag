@@ -51,11 +51,26 @@ export class OllamaEmbeddingService extends EmbeddingService {
   private readonly baseUrl: string;
   
   constructor(config: Partial<OllamaEmbeddingConfig> = {}) {
+    const baseUrl = process.env.OLLAMA_BASE_URL;
+    if (!baseUrl) {
+      throw new Error('OLLAMA_BASE_URL environment variable is required');
+    }
+    
+    const model = process.env.EMBEDDING_MODEL;
+    if (!model) {
+      throw new Error('EMBEDDING_MODEL environment variable is required');
+    }
+    
+    const dimensions = process.env.EMBEDDING_DIMENSIONS;
+    if (!dimensions) {
+      throw new Error('EMBEDDING_DIMENSIONS environment variable is required');
+    }
+    
     const defaultConfig = {
       ...EMBEDDING_CONFIGS.ollama,
-      baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-      model: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
-      dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || '768'),
+      baseUrl,
+      model,
+      dimensions: parseInt(dimensions),
       maxBatchSize: 50,
       maxRetries: 3,
       retryDelayMs: 1000,

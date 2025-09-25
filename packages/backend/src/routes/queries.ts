@@ -328,8 +328,8 @@ router.get('/test/connectivity',
         maxSearchResults: process.env.RAG_MAX_SEARCH_RESULTS || '10',
         similarityThreshold: process.env.RAG_SIMILARITY_THRESHOLD || '0.65',
         maxResponseTokens: process.env.RAG_MAX_RESPONSE_TOKENS || '1000',
-        embeddingProvider: process.env.EMBEDDING_PROVIDER || 'ollama',
-        llmProvider: process.env.LLM_PROVIDER || 'ollama'
+        embeddingProvider: process.env.EMBEDDING_PROVIDER || 'not configured',
+        llmProvider: process.env.LLM_PROVIDER || 'not configured'
       }
     };
 
