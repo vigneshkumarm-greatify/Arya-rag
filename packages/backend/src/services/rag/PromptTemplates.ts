@@ -132,9 +132,17 @@ export class PromptTemplateManager {
 
 QUERY: ${query}
 
-Analyze the provided context and extract the complete procedure with step-by-step instructions. Return ONLY valid JSON matching this exact schema:
+Analyze the provided context and extract the complete procedure with step-by-step instructions. Return ONLY valid JSON with the following structure:
 
-${JSON.stringify(RESPONSE_SCHEMAS.PROCEDURE_RESPONSE, null, 2)}
+{
+  "answer": "brief summary of the procedure",
+  "steps": ["1. First step with citation", "2. Second step with citation"],
+  "confidence": 0.9,
+  "sections": ["1.1", "1.2"],
+  "citations": [
+    {"source": "document_name", "page": 123, "section": "1.1"}
+  ]
+}
 
 CRITICAL REQUIREMENTS:
 - Extract ALL steps in the correct order
@@ -164,9 +172,16 @@ If the procedure is incomplete or unclear, explain what additional information i
 
 QUERY: ${query}
 
-Provide a clear, comprehensive answer based on the provided context. Return ONLY valid JSON matching this exact schema:
+Provide a clear, comprehensive answer based on the provided context. Return ONLY valid JSON with the following structure:
 
-${JSON.stringify(RESPONSE_SCHEMAS.QA_RESPONSE, null, 2)}
+{
+  "answer": "your complete answer with inline citations",
+  "confidence": 0.8,
+  "sections": ["1.1", "1.2"],
+  "citations": [
+    {"source": "document_name", "page": 123, "section": "1.1"}
+  ]
+}
 
 RESPONSE GUIDELINES:
 - Answer should be complete but concise
@@ -196,9 +211,16 @@ If the context doesn't contain sufficient information to fully answer the questi
 
 QUERY: ${query}
 
-Provide a thorough analysis based on the provided context. Return ONLY valid JSON matching this exact schema:
+Provide a thorough analysis based on the provided context. Return ONLY valid JSON with the following structure:
 
-${JSON.stringify(RESPONSE_SCHEMAS.QA_RESPONSE, null, 2)}
+{
+  "answer": "comprehensive analysis with inline citations",
+  "confidence": 0.85,
+  "sections": ["1.1", "1.2", "2.1"],
+  "citations": [
+    {"source": "document_name", "page": 123, "section": "1.1"}
+  ]
+}
 
 ANALYSIS REQUIREMENTS:
 - Examine relationships between different sections and concepts
@@ -228,9 +250,16 @@ Ensure your analysis is grounded in the provided context and includes accurate s
 
 QUERY: ${query}
 
-Answer the question based on the provided context. Return ONLY valid JSON matching this exact schema:
+Answer the question based on the provided context. Return ONLY valid JSON with the following structure:
 
-${JSON.stringify(RESPONSE_SCHEMAS.QA_RESPONSE, null, 2)}
+{
+  "answer": "your answer with inline citations like (Document Name, Page X)",
+  "confidence": 0.8,
+  "sections": ["section numbers referenced"],
+  "citations": [
+    {"source": "document_name", "page": 123, "section": "1.1"}
+  ]
+}
 
 RESPONSE GUIDELINES:
 - Use only information from the provided context

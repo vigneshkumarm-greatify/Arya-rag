@@ -710,7 +710,7 @@ const AIchat: React.FC<AIChatProps> = (props) => {
         // Create message content from RAG response
         const messageContent: ContentItem[] = [{
           type: 'text' as const,
-          content: ragResponse.response
+          content: ragResponse.answer
         }];
         
         // Convert RAG sources to chat sources format

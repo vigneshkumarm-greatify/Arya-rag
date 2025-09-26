@@ -268,16 +268,8 @@ export class LLMServiceFactory {
       };
     }
 
-    // Determine recommendation
-    if (results.ollama.available && results.openai.available) {
-      results.recommended = 'ollama'; // Prefer free local option
-    } else if (results.ollama.available) {
-      results.recommended = 'ollama';
-    } else if (results.openai.available) {
-      results.recommended = 'openai';
-    } else {
-      results.recommended = 'ollama'; // Default fallback
-    }
+    // Always recommend ollama for security - no cloud service recommendations
+    results.recommended = 'ollama';
 
     return results;
   }
@@ -308,51 +300,6 @@ export class LLMServiceFactory {
     };
   }
 
-  /**
-   * Create service with automatic fallback
-   * Tries primary provider first, falls back to secondary if primary fails
-   */
-  async createWithFallback(
-    primary: LLMProvider = 'ollama',
-    secondary: LLMProvider = 'openai'
-  ): Promise<{
-    service: LLMService;
-    provider: LLMProvider;
-    message: string;
-  }> {
-    try {
-      const primaryService = this.createLLMService({ provider: primary });
-      const connected = await primaryService.testConnection();
-      
-      if (connected) {
-        return {
-          service: primaryService,
-          provider: primary,
-          message: `Using ${primary} LLM service`
-        };
-      }
-    } catch (error) {
-      console.warn(`Primary LLM service (${primary}) failed:`, error);
-    }
-
-    // Try secondary provider
-    try {
-      const secondaryService = this.createLLMService({ provider: secondary });
-      const connected = await secondaryService.testConnection();
-      
-      if (connected) {
-        return {
-          service: secondaryService,
-          provider: secondary,
-          message: `Falling back to ${secondary} LLM service`
-        };
-      }
-    } catch (error) {
-      console.error(`Secondary LLM service (${secondary}) also failed:`, error);
-    }
-
-    throw new Error(`Both ${primary} and ${secondary} LLM services are unavailable`);
-  }
 
   /**
    * Generate a test prompt for validating services

@@ -21,22 +21,22 @@ import {
  */
 export const SECTION_PATTERNS = {
   // Standard hierarchical numbering (1, 1.1, 1.1.1, etc.)
-  HIERARCHICAL: /^(\d+(?:\.\d+){0,5})\s+(.+)/,
+  HIERARCHICAL: /^(\d+(?:\.\d+){0,5})\s+(.+)/m,
   
   // Chapter patterns
-  CHAPTER: /^(?:chapter|ch\.?)\s+(\d+)[\s:]+(.+)/i,
+  CHAPTER: /^(?:chapter|ch\.?)\s+(\d+)[\s:]+(.+)/im,
   
   // Appendix patterns
-  APPENDIX: /^(?:appendix|app\.?)\s+([a-z])\s+(.+)/i,
+  APPENDIX: /^(?:appendix|app\.?)\s+([a-z])\s+(.+)/im,
   
   // Section with letters (A, B, C, etc.)
-  LETTER_SECTION: /^([a-z])\.\s+(.+)/i,
+  LETTER_SECTION: /^([a-z])\.\s+(.+)/im,
   
   // Roman numerals (I, II, III, etc.)
-  ROMAN: /^([ivx]+)\.\s+(.+)/i,
+  ROMAN: /^([ivx]+)\.\s+(.+)/im,
   
   // Procedure steps (STEP 1, Step 2, etc.)
-  STEP: /^(?:step)\s+(\d+)[\s:]+(.+)/i
+  STEP: /^(?:step)\s+(\d+)[\s:]+(.+)/im
 };
 
 export interface ChunkingOptions {
@@ -382,7 +382,9 @@ export class ChunkingService {
 
     // Extract section numbers
     for (const [patternType, pattern] of Object.entries(SECTION_PATTERNS)) {
-      const matches = content.matchAll(pattern);
+      // Create a new global regex instance for matchAll to avoid state issues
+      const globalPattern = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
+      const matches = content.matchAll(globalPattern);
       for (const match of matches) {
         if (match[1]) {
           metadata.sectionNumbers.push(match[1]);

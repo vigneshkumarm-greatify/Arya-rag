@@ -13,7 +13,7 @@ import { EmbeddingService } from '../embedding/EmbeddingService';
 import { EmbeddingServiceFactory } from '../embedding/EmbeddingServiceFactory';
 import { VectorSearchService } from '../vector/VectorSearchService';
 import { DatabaseClient } from '../../config/database';
-import { RAGRequest, RAGResponse, SourceReference } from '@arya-rag/types';
+import { RAGRequest, RAGResponse, SourceReference, DocumentSource } from '@arya-rag/types';
 import { OllamaLLMService } from '../llm/OllamaLLMService';
 import { promptTemplateManager, QueryClassification, PromptConfig } from './PromptTemplates';
 
@@ -76,10 +76,10 @@ export class RAGService {
       includeSourceExcerpts: config.includeSourceExcerpts ?? true,
       requireSourceCitations: config.requireSourceCitations ?? true,
       maxSourcesPerResponse: config.maxSourcesPerResponse || 5,
-      enableStructuredResponses: config.enableStructuredResponses ?? usingOllama,
-      useQueryClassification: config.useQueryClassification ?? usingOllama,
-      enforceJsonFormat: config.enforceJsonFormat ?? usingOllama,
-      enablePromptOptimization: config.enablePromptOptimization ?? usingOllama
+      enableStructuredResponses: config.enableStructuredResponses ?? false,
+      useQueryClassification: config.useQueryClassification ?? false,
+      enforceJsonFormat: config.enforceJsonFormat ?? false,
+      enablePromptOptimization: config.enablePromptOptimization ?? false
     };
 
     // Initialize services
@@ -161,13 +161,13 @@ export class RAGService {
         request,
         llmResponse,
         searchResults,
-        queryClassification,
         {
           searchTime,
           generationTime,
           embeddingTime,
           totalTime: Date.now() - startTime
-        }
+        },
+        queryClassification
       );
 
       // Update statistics
@@ -195,9 +195,10 @@ export class RAGService {
       console.error(`❌ Enhanced RAG query failed: ${error instanceof Error ? error.message : error}`);
       
       return {
-        response: 'I apologize, but I encountered an error while processing your question. Please try again.',
+        answer: 'I apologize, but I encountered an error while processing your question. Please try again.',
         sources: [],
         confidence: 0,
+        responseTime: processingTime,
         metadata: {
           processingTime,
           error: error instanceof Error ? error.message : 'Unknown error'
@@ -285,9 +286,10 @@ export class RAGService {
       
       // Return error response
       return {
-        response: 'I apologize, but I encountered an error while processing your question. Please try again.',
+        answer: 'I apologize, but I encountered an error while processing your question. Please try again.',
         sources: [],
         confidence: 0,
+        responseTime: processingTime,
         metadata: {
           processingTime,
           error: error instanceof Error ? error.message : 'Unknown error'
@@ -302,7 +304,7 @@ export class RAGService {
   private async generateQueryEmbedding(query: string): Promise<number[]> {
     const response = await this.embeddingService.generateEmbedding({
       text: query,
-      metadata: { queryType: 'user_question' }
+      metadata: { }
     });
     
     return response.embedding;
@@ -458,17 +460,17 @@ export class RAGService {
     request: RAGRequest,
     llmResponse: { text: string; usage: any; jsonData?: any },
     searchResults: any[],
-    queryClassification?: QueryClassification,
-    timing: { searchTime: number; generationTime: number; embeddingTime: number; totalTime: number }
+    timing: { searchTime: number; generationTime: number; embeddingTime: number; totalTime: number },
+    queryClassification?: QueryClassification
   ): RAGResponse {
     // If we have structured JSON data, use it to enhance the response
     if (llmResponse.jsonData && this.config.enforceJsonFormat) {
       return this.formatStructuredResponse(
         request,
-        llmResponse,
+        { ...llmResponse, jsonData: llmResponse.jsonData },
         searchResults,
-        queryClassification,
-        timing
+        timing,
+        queryClassification
       );
     }
 
@@ -494,31 +496,30 @@ export class RAGService {
     request: RAGRequest,
     llmResponse: { text: string; usage: any; jsonData: any },
     searchResults: any[],
-    queryClassification?: QueryClassification,
-    timing: { searchTime: number; generationTime: number; embeddingTime: number; totalTime: number }
+    timing: { searchTime: number; generationTime: number; embeddingTime: number; totalTime: number },
+    queryClassification?: QueryClassification
   ): RAGResponse {
     const jsonData = llmResponse.jsonData;
 
     // Extract sources from structured data or search results
-    let sources: SourceReference[] = [];
+    let sources: DocumentSource[] = [];
     
     if (jsonData.citations && Array.isArray(jsonData.citations)) {
       sources = jsonData.citations.map((citation: any) => ({
-        documentId: this.findDocumentIdByName(citation.source, searchResults),
         documentName: citation.source,
         pageNumber: citation.page,
-        sectionTitle: citation.section,
-        similarityScore: this.findSimilarityScore(citation, searchResults)
+        excerpt: '',
+        confidence: this.findSimilarityScore(citation, searchResults),
+        sectionTitle: citation.section
       }));
     } else {
       // Fall back to search results
       sources = searchResults.slice(0, this.config.maxSourcesPerResponse).map(result => ({
-        documentId: result.documentId,
         documentName: result.documentName,
         pageNumber: result.pageNumber,
-        sectionTitle: result.sectionTitle,
-        excerpt: this.config.includeSourceExcerpts ? this.extractExcerpt(result.chunkText) : undefined,
-        similarityScore: result.similarityScore
+        excerpt: this.config.includeSourceExcerpts ? this.extractExcerpt(result.chunkText) : '',
+        confidence: result.similarityScore,
+        sectionTitle: result.sectionTitle
       }));
     }
 
@@ -526,7 +527,7 @@ export class RAGService {
     const confidence = jsonData.confidence || this.calculateConfidence(searchResults, llmResponse.text);
 
     // Build enhanced response text
-    let responseText = jsonData.answer || llmResponse.text;
+    let responseText = this.extractAnswerFromJsonData(jsonData, llmResponse.text);
     
     // Add structured steps for procedural responses
     if (jsonData.steps && Array.isArray(jsonData.steps) && jsonData.steps.length > 0) {
@@ -536,10 +537,14 @@ export class RAGService {
       });
     }
 
+    // Ensure inline citations are present in the response text
+    responseText = this.injectInlineCitations(responseText, sources, searchResults);
+
     return {
-      response: responseText,
+      answer: responseText,
       sources,
       confidence,
+      responseTime: timing.totalTime,
       metadata: {
         processingTime: timing.totalTime,
         searchTime: timing.searchTime,
@@ -573,6 +578,123 @@ export class RAGService {
       result.pageNumber === citation.page
     );
     return match?.similarityScore || 0.8; // Default similarity
+  }
+
+  /**
+   * Extract the actual answer text from JSON data, handling cases where 
+   * the model returns JSON schema as text instead of structured data
+   */
+  private extractAnswerFromJsonData(jsonData: any, fallbackText: string): string {
+    // If jsonData has a direct answer property, use it
+    if (jsonData.answer && typeof jsonData.answer === 'string') {
+      // Check if the answer itself contains JSON (model returned JSON as text)
+      if (jsonData.answer.includes('"answer":') && jsonData.answer.includes('{')) {
+        try {
+          // Try to parse the JSON within the answer
+          const nestedJson = JSON.parse(jsonData.answer);
+          return nestedJson.answer || jsonData.answer;
+        } catch (e) {
+          // If parsing fails, return the original answer
+          return jsonData.answer;
+        }
+      }
+      return jsonData.answer;
+    }
+
+    // If no answer in jsonData, try to extract from the raw response text
+    if (fallbackText) {
+      // Check if the fallback text contains JSON with an answer field
+      if (fallbackText.includes('"answer":')) {
+        try {
+          // Try to find JSON in the text
+          const jsonStart = fallbackText.indexOf('{');
+          const jsonEnd = fallbackText.lastIndexOf('}');
+          if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+            const jsonStr = fallbackText.substring(jsonStart, jsonEnd + 1);
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.answer) {
+              return parsed.answer;
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to extract answer from JSON text:', e);
+        }
+      }
+      // If the text looks like a direct answer (not JSON), return it
+      if (!fallbackText.includes('{') || !fallbackText.includes('"')) {
+        return fallbackText;
+      }
+    }
+
+    // Final fallback
+    return jsonData.answer || fallbackText || 'No answer available';
+  }
+
+  /**
+   * Helper method to inject inline citations into response text
+   * Ensures consistent citation formatting across all LLM providers
+   */
+  private injectInlineCitations(
+    responseText: string, 
+    citations: DocumentSource[],
+    searchResults?: any[]
+  ): string {
+    // Clean up the response text first by removing incorrect citations
+    let cleanedText = this.cleanIncorrectCitations(responseText);
+
+    // If response already contains proper inline citations after cleaning, return as-is
+    if (cleanedText.includes('(') && cleanedText.includes(', Page ')) {
+      return cleanedText;
+    }
+
+    // If no citations available, return cleaned text
+    if (!citations || citations.length === 0) {
+      return cleanedText;
+    }
+
+    // Only use the top 1-2 most relevant citations instead of all citations
+    const topCitations = citations
+      .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+      .slice(0, Math.min(2, citations.length));
+
+    // Create a map of unique citations with their inline format
+    const citationMap = new Map<string, string>();
+    topCitations.forEach(citation => {
+      const key = `${citation.documentName}:${citation.pageNumber}`;
+      const inlineFormat = `(${citation.documentName}, Page ${citation.pageNumber})`;
+      citationMap.set(key, inlineFormat);
+    });
+
+    // Get unique inline citations
+    const inlineCitations = Array.from(citationMap.values());
+
+    // For simple responses, just add the best citation at the end
+    const trimmed = cleanedText.replace(/\.$/, '');
+    if (inlineCitations.length === 1) {
+      return `${trimmed} ${inlineCitations[0]}.`;
+    } else if (inlineCitations.length === 2) {
+      // For two citations, add both at the end
+      return `${trimmed} ${inlineCitations.join(' ')}.`;
+    } else {
+      // Fallback - no citations
+      return cleanedText;
+    }
+  }
+
+  /**
+   * Clean up incorrect citations from Ollama responses
+   * Removes patterns like (1.2), (1.1), etc. that are not proper document citations
+   */
+  private cleanIncorrectCitations(text: string): string {
+    // Remove section references like (1.2), (1.1), (2.3.1), etc.
+    // But preserve proper citations like (Document Name, Page X)
+    return text
+      // Remove standalone section references in parentheses
+      .replace(/\s*\(\d+(?:\.\d+)*\)/g, '')
+      // Clean up any double spaces left behind
+      .replace(/\s+/g, ' ')
+      // Clean up any trailing spaces
+      .trim();
   }
 
   /**
@@ -677,22 +799,25 @@ Please answer the question based on the information provided above. Remember to 
     timing: { searchTime: number; generationTime: number; embeddingTime: number; totalTime: number }
   ): RAGResponse {
     // Extract source references
-    const sources: SourceReference[] = searchResults.slice(0, this.config.maxSourcesPerResponse).map(result => ({
-      documentId: result.documentId,
+    const sources: DocumentSource[] = searchResults.slice(0, this.config.maxSourcesPerResponse).map(result => ({
       documentName: result.documentName,
       pageNumber: result.pageNumber,
-      sectionTitle: result.sectionTitle,
-      excerpt: this.config.includeSourceExcerpts ? this.extractExcerpt(result.chunkText) : undefined,
-      similarityScore: result.similarityScore
+      excerpt: this.config.includeSourceExcerpts ? this.extractExcerpt(result.chunkText) : '',
+      confidence: result.similarityScore,
+      sectionTitle: result.sectionTitle
     }));
 
     // Calculate confidence based on source quality and similarity
     const confidence = this.calculateConfidence(searchResults, llmResponse.text);
 
+    // Let the AI handle citations naturally through the system prompt
+    const responseText = llmResponse.text;
+
     return {
-      response: llmResponse.text,
+      answer: responseText,
       sources,
       confidence,
+      responseTime: timing.totalTime,
       metadata: {
         processingTime: timing.totalTime,
         searchTime: timing.searchTime,
@@ -757,10 +882,10 @@ Please answer the question based on the information provided above. Remember to 
       await (db as any).from('user_queries').insert({
         user_id: request.userId,
         query_text: request.query,
-        response_text: response.response,
+        response_text: response.answer,
         sources: response.sources,
         confidence_score: response.confidence,
-        processing_time_ms: response.metadata.processingTime
+        processing_time_ms: response.metadata?.processingTime || response.responseTime
       });
     } catch (error) {
       console.error('Failed to save query to database:', error);
@@ -788,7 +913,7 @@ Please answer the question based on the information provided above. Remember to 
       
       const count = this.stats.totalQueries;
       
-      this.stats.avgResponseTime = ((prevAvgResponse * (count - 1)) + response.metadata.processingTime) / count;
+      this.stats.avgResponseTime = ((prevAvgResponse * (count - 1)) + (response.metadata?.processingTime || response.responseTime)) / count;
       this.stats.avgSearchTime = ((prevAvgSearch * (count - 1)) + searchTime) / count;
       this.stats.avgGenerationTime = ((prevAvgGeneration * (count - 1)) + generationTime) / count;
       this.stats.avgSourcesPerResponse = ((prevAvgSources * (count - 1)) + response.sources.length) / count;

@@ -256,16 +256,8 @@ export class EmbeddingServiceFactory {
       };
     }
 
-    // Determine recommendation
-    if (results.ollama.available && results.openai.available) {
-      results.recommended = 'ollama'; // Prefer free local option
-    } else if (results.ollama.available) {
-      results.recommended = 'ollama';
-    } else if (results.openai.available) {
-      results.recommended = 'openai';
-    } else {
-      results.recommended = 'ollama'; // Default fallback
-    }
+    // Always recommend ollama for security - no cloud service recommendations
+    results.recommended = 'ollama';
 
     return results;
   }
@@ -296,49 +288,4 @@ export class EmbeddingServiceFactory {
     };
   }
 
-  /**
-   * Create service with automatic fallback
-   * Tries primary provider first, falls back to secondary if primary fails
-   */
-  async createWithFallback(
-    primary: EmbeddingProvider = 'ollama',
-    secondary: EmbeddingProvider = 'openai'
-  ): Promise<{
-    service: EmbeddingService;
-    provider: EmbeddingProvider;
-    message: string;
-  }> {
-    try {
-      const primaryService = this.createEmbeddingService({ provider: primary });
-      const connected = await primaryService.testConnection();
-      
-      if (connected) {
-        return {
-          service: primaryService,
-          provider: primary,
-          message: `Using ${primary} embedding service`
-        };
-      }
-    } catch (error) {
-      console.warn(`Primary embedding service (${primary}) failed:`, error);
-    }
-
-    // Try secondary provider
-    try {
-      const secondaryService = this.createEmbeddingService({ provider: secondary });
-      const connected = await secondaryService.testConnection();
-      
-      if (connected) {
-        return {
-          service: secondaryService,
-          provider: secondary,
-          message: `Falling back to ${secondary} embedding service`
-        };
-      }
-    } catch (error) {
-      console.error(`Secondary embedding service (${secondary}) also failed:`, error);
-    }
-
-    throw new Error(`Both ${primary} and ${secondary} embedding services are unavailable`);
-  }
 }

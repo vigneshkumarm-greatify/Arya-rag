@@ -7,7 +7,7 @@
  * @author ARYA RAG Team
  */
 
-import { LLMServiceConfig, EmbeddingServiceConfig } from '../services/llm/LLMService';
+import { LLMServiceConfig } from '../services/llm/LLMService';
 import { ChunkingOptions } from '../services/chunking/ChunkingService';
 
 /**
@@ -91,7 +91,9 @@ export const MISTRAL_CHUNKING_CONFIG: ChunkingOptions = {
   // Document structure preservation
   preservePageBoundaries: true,
   preserveSentences: true,
-  includeMetadata: true
+  includeMetadata: true,
+  detectSectionHeaders: true,
+  enhancedMetadata: true
 };
 
 /**
@@ -193,11 +195,16 @@ RESPONSE FORMAT:
 - List all relevant section numbers from the documents
 - Provide exact citations with source, page, and section information
 
-CITATION RULES:
-- Use format: {"source": "document_name", "page": 123, "section": "1.2.3"}
+CITATION REQUIREMENTS:
+- CRITICAL: Include inline citations directly in your answer text using format: (Document Name, Page X)
+- Also provide structured citations in the "citations" array: {"source": "document_name", "page": 123, "section": "1.2.3"}
+- Every factual claim in your answer MUST be followed by an inline citation
 - Only cite sections that directly support your answer
 - If information spans multiple sections, include all relevant citations
 - Mark confidence lower if answer requires inference across multiple sections
+
+EXAMPLE ANSWER FORMAT:
+"The ship's emergency procedures require immediate activation of alarm systems (Emergency Manual, Page 15). All personnel must report to designated stations within 5 minutes of the alarm (Emergency Manual, Page 16)."
 
 If the provided context doesn't contain sufficient information to answer the question, respond with a low confidence score and explain what additional information would be needed.`,
 
@@ -216,12 +223,23 @@ STEP FORMATTING:
 - Preserve original numbering (e.g., "1.1.1", "1.1.2")
 - Include any conditional statements or decision points
 - Maintain safety warnings and critical notes exactly as written
+- CRITICAL: Include inline citations in each step using format: (Document Name, Page X)
 
 PROCEDURAL ANALYSIS:
 - Identify prerequisites and preparation steps
 - Note any equipment or personnel requirements
 - Include timing or sequence dependencies
 - Flag incomplete procedures or missing steps
+
+CITATION REQUIREMENTS:
+- Include inline citations in your answer text using format: (Document Name, Page X)
+- Each step should reference its source with inline citations
+- Also provide structured citations in the "citations" array
+- Ensure every procedural claim is properly cited
+
+EXAMPLE STEP FORMAT:
+"1. Activate the emergency alarm system immediately upon detection of fire (Fire Safety Manual, Page 23)"
+"2. All personnel must evacuate to designated muster stations within 5 minutes (Emergency Procedures, Page 12)"
 
 Return structured JSON with complete step lists and accurate section citations for each procedural element.`,
 
@@ -245,6 +263,15 @@ QUALITY ASSURANCE:
 - Check for completeness of procedural chains
 - Identify potential ambiguities or unclear instructions
 - Flag missing dependencies or incomplete information
+
+CITATION REQUIREMENTS:
+- CRITICAL: Include inline citations in your analysis using format: (Document Name, Page X)
+- Every analytical claim must be supported with source citations
+- Reference specific sections and page numbers for all findings
+- Also provide structured citations in the "citations" array
+
+EXAMPLE ANALYSIS FORMAT:
+"The document structure follows a hierarchical pattern with main sections covering safety protocols (Safety Manual, Page 5) and operational procedures (Operations Guide, Page 12). Cross-references between sections indicate dependencies that must be followed sequentially (Safety Manual, Page 8)."
 
 Provide comprehensive, structured analysis while maintaining document integrity and military formatting standards.`
 } as const;
