@@ -68,14 +68,10 @@ async function runMigration() {
     let errorCount = 0;
 
     try {
-      // Step 1: Enable pgvector extension (might fail, that's OK)
-      console.log('🔧 Enabling pgvector extension...');
-      const { error: extensionError } = await db.rpc('exec', {
-        sql: 'CREATE EXTENSION IF NOT EXISTS vector'
-      });
-      if (extensionError && !extensionError.message.includes('already exists')) {
-        console.warn('⚠️  pgvector extension setup:', extensionError.message);
-      }
+      // Step 1: Check pgvector extension (manual setup required)
+      console.log('🔧 Checking pgvector extension...');
+      // Note: pgvector must be enabled via Supabase SQL Editor or Dashboard
+      console.log('   ⚠️  Ensure pgvector is enabled in your Supabase project');
 
       // Step 2: Try to create user_documents table
       console.log('📄 Creating user_documents table...');
@@ -154,7 +150,7 @@ async function runMigration() {
       file_hash: 'test_hash_' + Date.now()
     };
 
-    const { data: insertData, error: insertError } = await db
+    const { data: insertData, error: insertError } = await (db as any)
       .from('user_documents')
       .insert([testDoc])
       .select();

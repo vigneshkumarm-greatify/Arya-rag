@@ -11,6 +11,11 @@
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist",
     "migrate": "tsx src/scripts/migrate.ts",
+    "analyze-chunking": "tsx src/scripts/analyze-chunking.ts",
+    "test-dual-layer": "tsx src/scripts/test-dual-layer-chunking.ts",
+    "test-conversation": "tsx src/scripts/test-conversation-context.ts",
+    "diagnose-search": "tsx src/scripts/diagnose-search-issue.ts",
+    "test-supabase-insert": "tsx src/scripts/test-supabase-insert.ts",
     "test:integration": "tsx src/tests/integration.test.ts",
     "test:unit": "tsx src/tests/unit.test.ts",
     "test:pipeline": "tsx src/tests/pipeline.test.ts",
@@ -21,11 +26,13 @@
     "test": "npm run test:runner"
   },
   "dependencies": {
+    "@esbuild/darwin-arm64": "^0.25.10",
     "@supabase/supabase-js": "^2.57.4",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
     "@types/multer": "^1.4.13",
     "@types/node": "^20.11.19",
+    "@types/pg": "^8.15.5",
     "@types/uuid": "^9.0.8",
     "axios": "^1.6.7",
     "cors": "^2.8.5",
@@ -43,6 +50,7 @@
     "node-fetch": "^3.3.2",
     "openai": "^4.104.0",
     "pdf-parse": "^1.1.1",
+    "pg": "^8.16.3",
     "typescript": "^5.2.2",
     "unpdf": "^1.2.2",
     "uuid": "^9.0.1"

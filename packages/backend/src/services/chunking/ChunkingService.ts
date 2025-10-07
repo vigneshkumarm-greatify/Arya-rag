@@ -15,6 +15,7 @@ import {
   isWithinTokenLimit,
   getTokenStats 
 } from '../../utils/tokenCounter';
+import { FactExtractionService, ExtractedFact } from '../extraction/FactExtractionService';
 
 /**
  * Section header patterns for hierarchical documents
@@ -47,6 +48,10 @@ export interface ChunkingOptions {
   includeMetadata: boolean;        // Include section titles and metadata (default: true)
   detectSectionHeaders: boolean;   // Detect and preserve section headers (default: true)
   enhancedMetadata: boolean;       // Include enhanced metadata extraction (default: true)
+  dualLayer: boolean;              // Generate both context and detail chunks (default: false)
+  detailChunkSize: number;         // Size for detail chunks (default: 200)
+  detailChunkOverlap: number;      // Overlap for detail chunks (default: 50)
+  extractFacts: boolean;           // Extract structured facts (default: true)
 }
 
 export interface ChunkingResult {
@@ -55,9 +60,14 @@ export interface ChunkingResult {
   totalTokens: number;
   avgTokensPerChunk: number;
   processingTime: number;
+  contextChunks?: DocumentChunk[];  // Large chunks for context
+  detailChunks?: DocumentChunk[];   // Small chunks for details
+  extractedFacts?: Map<string, ExtractedFact[]>; // Facts by chunk ID
 }
 
 export class ChunkingService {
+  protected factExtractor: FactExtractionService;
+  
   private readonly defaultOptions: ChunkingOptions = {
     chunkSizeTokens: process.env.CHUNK_SIZE_TOKENS ? parseInt(process.env.CHUNK_SIZE_TOKENS) : 800,
     chunkOverlapTokens: process.env.CHUNK_OVERLAP_TOKENS ? parseInt(process.env.CHUNK_OVERLAP_TOKENS) : 150,
@@ -65,8 +75,16 @@ export class ChunkingService {
     preserveSentences: true,
     includeMetadata: true,
     detectSectionHeaders: true,
-    enhancedMetadata: true
+    enhancedMetadata: true,
+    dualLayer: false,
+    detailChunkSize: 200,
+    detailChunkOverlap: 50,
+    extractFacts: true
   };
+
+  constructor() {
+    this.factExtractor = new FactExtractionService();
+  }
 
   /**
    * Process pages into chunks with intelligent splitting
@@ -605,5 +623,188 @@ export class ChunkingService {
     // Re-chunk with new options
     const documentId = chunks[0]?.documentId || 'unknown';
     return this.processPages(pages, documentId, newOptions);
+  }
+
+  /**
+   * Process pages with dual-layer chunking
+   * Creates both context chunks (large) and detail chunks (small)
+   * 
+   * @param pages - Array of page content
+   * @param documentId - Document identifier
+   * @param options - Chunking configuration
+   * @returns Result with both chunk layers
+   */
+  async processPagesWithDualLayer(
+    pages: PageContent[],
+    documentId: string,
+    options: Partial<ChunkingOptions> = {}
+  ): Promise<ChunkingResult> {
+    const startTime = Date.now();
+    const config = { ...this.defaultOptions, ...options, dualLayer: true };
+    
+    console.log(`📄 Starting dual-layer chunking for document ${documentId}`);
+    console.log(`   Context chunks: ${config.chunkSizeTokens} tokens`);
+    console.log(`   Detail chunks: ${config.detailChunkSize} tokens`);
+
+    // Step 1: Create context chunks (existing logic)
+    const contextResult = await this.processPages(pages, documentId, {
+      ...config,
+      dualLayer: false
+    });
+    
+    // Mark context chunks with their layer
+    const contextChunks = contextResult.chunks.map((chunk: any) => ({
+      ...chunk,
+      chunkLayer: 'context',
+      parentChunkId: null
+    }));
+    console.log(`✅ Created ${contextChunks.length} context chunks`);
+
+    // Step 2: Create detail chunks from context chunks
+    const detailChunks: DocumentChunk[] = [];
+    const extractedFacts = new Map<string, ExtractedFact[]>();
+    let detailChunkIndex = 0;
+
+    for (const contextChunk of contextChunks) {
+      // Create detail chunks from this context chunk
+      const details = await this.createDetailChunks(
+        contextChunk,
+        documentId,
+        detailChunkIndex,
+        config
+      );
+      
+      detailChunks.push(...details.chunks);
+      detailChunkIndex += details.chunks.length;
+      
+      // Extract facts if enabled
+      if (config.extractFacts) {
+        const factResult = await this.factExtractor.extractFacts(
+          contextChunk.chunkText,
+          { useLLM: false, minConfidence: 0.6 }
+        );
+        
+        if (factResult.facts.length > 0) {
+          extractedFacts.set(contextChunk.id, factResult.facts);
+          console.log(`   📊 Extracted ${factResult.facts.length} facts from chunk ${contextChunk.chunkIndex}`);
+        }
+      }
+    }
+
+    console.log(`✅ Created ${detailChunks.length} detail chunks`);
+
+    const processingTime = Date.now() - startTime;
+    const allChunks = [...contextChunks, ...detailChunks];
+    const totalTokens = allChunks.reduce((sum, c) => sum + (c.chunkTokens || 0), 0);
+
+    console.log(`✅ Dual-layer chunking complete`);
+    console.log(`   Total chunks: ${allChunks.length} (${contextChunks.length} context + ${detailChunks.length} detail)`);
+    console.log(`   Total facts: ${Array.from(extractedFacts.values()).reduce((sum, facts) => sum + facts.length, 0)}`);
+    console.log(`   Processing time: ${processingTime}ms`);
+
+    return {
+      chunks: allChunks,
+      totalChunks: allChunks.length,
+      totalTokens,
+      avgTokensPerChunk: totalTokens / allChunks.length,
+      processingTime,
+      contextChunks,
+      detailChunks,
+      extractedFacts
+    };
+  }
+
+  /**
+   * Create detail chunks from a context chunk
+   * Detail chunks are smaller and more focused on specific facts
+   */
+  private async createDetailChunks(
+    contextChunk: DocumentChunk,
+    documentId: string,
+    startIndex: number,
+    config: ChunkingOptions
+  ): Promise<{ chunks: DocumentChunk[] }> {
+    const chunks: DocumentChunk[] = [];
+    
+    const text = contextChunk.chunkText;
+    let remainingText = text;
+    let currentPosition = 0;
+    let chunkIndex = startIndex;
+    let previousChunkText = '';
+
+    while (remainingText.trim().length > 0) {
+      // Calculate overlap from previous chunk
+      let chunkText = '';
+      if (previousChunkText && config.detailChunkOverlap > 0) {
+        const overlapText = this.extractOverlapText(
+          previousChunkText,
+          config.detailChunkOverlap
+        );
+        chunkText = overlapText + ' ';
+      }
+
+      // Determine how much text we can add
+      const remainingTokenBudget = config.detailChunkSize - countTokens(chunkText);
+      const [mainContent, leftoverText] = splitTextAtTokenCount(
+        remainingText,
+        remainingTokenBudget
+      );
+
+      // Preserve sentences if enabled
+      let finalContent = mainContent;
+      let finalLeftover = leftoverText;
+      
+      if (config.preserveSentences && leftoverText.length > 0) {
+        const splitPoint = findSentenceBoundary(
+          chunkText + mainContent + leftoverText,
+          (chunkText + mainContent).length
+        );
+        
+        const adjustedSplitPoint = splitPoint - chunkText.length;
+        if (adjustedSplitPoint > 0 && adjustedSplitPoint < remainingText.length) {
+          finalContent = remainingText.substring(0, adjustedSplitPoint);
+          finalLeftover = remainingText.substring(adjustedSplitPoint);
+        }
+      }
+
+      chunkText += finalContent;
+      
+      // Create detail chunk with reference to parent context chunk
+      // Use unique ID format for detail chunks to avoid conflicts
+      const baseChunk = this.createChunk(
+        chunkText.trim(),
+        documentId,
+        contextChunk.pageNumber,
+        chunkIndex,
+        currentPosition,
+        currentPosition + finalContent.length,
+        contextChunk.sectionTitle
+      );
+      
+      // Override ID with detail-specific format to prevent duplicates
+      const detailChunk = {
+        ...baseChunk,
+        id: `${documentId}-chunk-detail-${chunkIndex}`,
+        // Store parent chunk ID in metadata
+        chunkLayer: 'detail',
+        parentChunkId: contextChunk.id
+      };
+      
+      chunks.push(detailChunk as any);
+
+      // Update for next iteration
+      previousChunkText = finalContent;
+      remainingText = finalLeftover;
+      currentPosition += finalContent.length;
+      chunkIndex++;
+
+      // Safety check
+      if (chunks.length > 100) {
+        console.warn(`⚠️ Too many detail chunks for context chunk ${contextChunk.chunkIndex}, breaking`);
+        break;
+      }
+    }
+
+    return { chunks };
   }
 }

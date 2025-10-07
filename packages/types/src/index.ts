@@ -106,6 +106,7 @@ export interface RAGRequest {
   documentIds?: string[];
   maxResults?: number;
   responseStyle?: 'detailed' | 'concise';
+  sessionId?: string;
 }
 
 export interface SourceReference {

@@ -161,7 +161,7 @@ export class DocumentProcessor {
           console.log(`   ✓ Extracted page ${pageNum}: ${pageText.length} characters`);
           
         } catch (pageError) {
-          console.warn(`   ⚠️  Failed to extract page ${pageNum}:`, pageError.message);
+          console.warn(`   ⚠️  Failed to extract page ${pageNum}:`, pageError instanceof Error ? pageError.message : 'Unknown error');
           // Add empty page to maintain page numbering
           pages.push({
             pageNumber: pageNum,

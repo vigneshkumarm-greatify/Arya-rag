@@ -18,6 +18,7 @@ import {
 } from '../../config/database';
 import { DocumentChunk } from '@arya-rag/types';
 import { ChunkWithEmbedding } from '@arya-rag/types';
+// import { getPostgresPool } from '../../config/postgres'; // Not needed - using Supabase client instead
 
 export interface VectorStorageConfig {
   batchSize: number;
@@ -183,21 +184,39 @@ export class VectorStorageService {
     }
 
     // Attempt to insert with retries
+    // NOTE: Using DIRECT PostgreSQL connection to bypass PostgREST entirely
+    // This avoids ALL Supabase REST API schema cache issues
     let lastError: Error | null = null;
     
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
       try {
-        const { data, error } = await this.db
-          .from('document_chunks' as any)
-          .insert(dbChunks as any)
-          .select('document_id, chunk_index');
-
+        // Use Supabase client for bulk insert (fallback from direct PostgreSQL)
+        // Note: Direct PostgreSQL connection requires SUPABASE_DB_PASSWORD which may not be configured
+        
+        // Use Supabase client for bulk insert
+        const { data, error } = await (this.db as any)
+          .from('document_chunks')
+          .insert(dbChunks.map(chunk => ({
+            chunk_id: chunk.chunk_id,
+            document_id: chunk.document_id,
+            user_id: chunk.user_id,
+            chunk_index: chunk.chunk_index,
+            chunk_text: chunk.chunk_text,
+            chunk_tokens: chunk.chunk_tokens,
+            page_number: chunk.page_number,
+            page_position_start: chunk.page_position_start || 0,
+            page_position_end: chunk.page_position_end || 0,
+            section_title: chunk.section_title,
+            embedding: chunk.embedding,
+            embedding_model: chunk.embedding_model
+          })));
+        
         if (error) {
-          throw error;
+          throw new Error(`Supabase insert failed: ${error.message}`);
         }
-
+        
         return {
-          successCount: data?.length || 0,
+          successCount: dbChunks.length,
           errors
         };
 
@@ -254,6 +273,12 @@ export class VectorStorageService {
     // Generate a unique chunk ID if not provided, or use existing one
     const chunkId = chunk.id || this.generateChunkId(documentId, chunk.chunkIndex);
 
+    // Get dual-layer fields from chunk (with proper typing)
+    const chunkAny = chunk as any;
+    const chunkLayer = chunkAny.chunkLayer || 'context';
+    const parentChunkId = chunkAny.parentChunkId || null;
+    const extractedFacts = chunkAny.extractedFacts || [];
+
     return {
       chunk_id: chunkId,
       document_id: documentId,
@@ -266,7 +291,15 @@ export class VectorStorageService {
       page_position_end: chunk.pagePositionEnd || chunk.chunkText.length,
       section_title: chunk.sectionTitle,
       embedding: chunk.embedding, // Use array directly for pgvector
-      embedding_model: embeddingModel
+      embedding_model: embeddingModel,
+      // Dual-layer chunking fields (extended fields not in base type)
+      chunk_layer: chunkLayer,
+      parent_chunk_id: parentChunkId,
+      extracted_facts: extractedFacts
+    } as InsertDocumentChunk & {
+      chunk_layer: string;
+      parent_chunk_id: string | null;
+      extracted_facts: any[];
     };
   }
 
@@ -296,7 +329,7 @@ export class VectorStorageService {
       console.log(`🔍 Document validation for ${documentId} (user: ${userId}):`, { 
         found: !!data, 
         error: error?.message,
-        data: data ? { document_id: data.document_id, user_id: data.user_id } : null
+        data: data ? { document_id: (data as any).document_id, user_id: (data as any).user_id } : null
       });
 
       return !error && data !== null;

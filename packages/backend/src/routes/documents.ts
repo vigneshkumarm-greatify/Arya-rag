@@ -710,21 +710,31 @@ async function processDocumentInBackground(
       })
       .eq('document_id', documentId);
 
-    // Step 3: Chunk the document
+    // Step 3: Chunk the document with DUAL-LAYER chunking
+    console.log(`📝 STEP 5: Starting DUAL-LAYER chunking (context + detail chunks)`);
     const { ChunkingService } = await import('../services/chunking/ChunkingService');
     const chunkingService = new ChunkingService();
-    const chunkingResult = await chunkingService.processPages(
+    
+    // Use dual-layer chunking for minute details retrieval
+    const chunkingResult = await chunkingService.processPagesWithDualLayer(
       extractionResult.pages,
       documentId,
       {
-        maxTokensPerChunk: parseInt(process.env.CHUNK_SIZE_TOKENS || '600'),
-        overlapTokens: parseInt(process.env.CHUNK_OVERLAP_TOKENS || '100'),
-        preservePageBoundaries: true
+        chunkSizeTokens: parseInt(process.env.CHUNK_SIZE_TOKENS || '600'),
+        chunkOverlapTokens: parseInt(process.env.CHUNK_OVERLAP_TOKENS || '100'),
+        preservePageBoundaries: true,
+        dualLayer: true,
+        detailChunkSize: 200,
+        detailChunkOverlap: 50,
+        extractFacts: true
       }
     );
 
-    console.log(`✂️  Chunking result:`, {
-      chunksCount: chunkingResult.chunks.length,
+    console.log(`✂️  Dual-layer chunking result:`, {
+      totalChunks: chunkingResult.totalChunks,
+      contextChunks: chunkingResult.contextChunks?.length || 0,
+      detailChunks: chunkingResult.detailChunks?.length || 0,
+      extractedFacts: chunkingResult.extractedFacts?.size || 0,
       totalTokens: chunkingResult.totalTokens,
       processingTime: chunkingResult.processingTime
     });
@@ -757,19 +767,26 @@ async function processDocumentInBackground(
       console.log(`🧠 Generating embeddings for batch ${Math.floor(i / batchSize) + 1} (${batch.length} chunks)`);
 
       const batchEmbeddings = await Promise.all(
-        batch.map(async (chunk) => {
+        batch.map(async (chunk: any) => {
           const embeddingResponse = await embeddingService.generateEmbedding({
             text: chunk.chunkText,
             metadata: {
               documentId: chunk.documentId,
               chunkId: chunk.id,
-              pageNumber: chunk.pageNumber
+              pageNumber: chunk.pageNumber,
+              chunkLayer: chunk.chunkLayer || 'context'
             }
           });
 
+          // Get extracted facts for this chunk if available
+          const chunkFacts = chunkingResult.extractedFacts?.get(chunk.id) || [];
+
           return {
             ...chunk,
-            embedding: embeddingResponse.embedding
+            embedding: embeddingResponse.embedding,
+            chunkLayer: chunk.chunkLayer || 'context',
+            parentChunkId: chunk.parentChunkId || null,
+            extractedFacts: chunkFacts
           };
         })
       );

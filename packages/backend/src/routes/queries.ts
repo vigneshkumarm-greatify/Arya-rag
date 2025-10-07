@@ -20,9 +20,13 @@ import { RAGRequest, RAGResponse } from '@arya-rag/types';
 
 const router = Router();
 
+import { ConversationalRAGService } from '../services/rag/ConversationalRAGService';
+
 // Services will be initialized lazily like Arya-Chatbot
 let ragService: any;
+let conversationalRAGService: any;
 let databaseClient: any;
+let conversationService: any;
 
 // Initialize services lazily to avoid import-time crashes
 async function initializeServices() {
@@ -43,8 +47,22 @@ async function initializeServices() {
       };
 
       ragService = new RAGService(ragConfig);
+      
+      // Initialize conversational RAG service
+      conversationalRAGService = new ConversationalRAGService({
+        ...ragConfig,
+        enableIntentAnalysis: true,
+        enableConversationalMode: true,
+        enableFollowUpSuggestions: true,
+        responseStyle: 'adaptive'
+      });
+      
       databaseClient = DatabaseClient.getInstance();
-      console.log('✅ RAG Service initialized for query processing');
+      
+      // Initialize conversation context service
+      const { ConversationContextService } = await import('../services/conversation/ConversationContextService');
+      conversationService = new ConversationContextService();
+      console.log('✅ RAG Service, Conversational RAG, and Conversation Context initialized for query processing');
       
     } catch (error) {
       console.error('❌ Failed to initialize RAG Service:', error);
@@ -66,10 +84,11 @@ router.post('/process',
       await initializeServices();
     }
 
-    const { query, userId, documentIds, maxResults, responseStyle, includeExcerpts } = req.body;
+    const { query, userId, documentIds, maxResults, responseStyle, includeExcerpts, sessionId } = req.body;
 
     console.log(`🔍 Processing RAG query for user: ${userId}`);
     console.log(`   Query: "${query}"`);
+    console.log(`   Session: ${sessionId || 'new session'}`);
     console.log(`   Document scope: ${documentIds ? documentIds.length + ' specific documents' : 'all user documents'}`);
 
     // Verify user has access to requested documents
@@ -77,32 +96,68 @@ router.post('/process',
       await verifyDocumentAccess(userId, documentIds);
     }
 
+    // Get or create conversation session
+    const session = conversationService.getSession(userId, sessionId);
+    const activeSessionId = session.sessionId;
+
+    // Add user message to conversation
+    conversationService.addMessage(userId, activeSessionId, 'user', query);
+
+    // Check for references and resolve if needed
+    let effectiveQuery = query;
+    let referenceResolution = null;
+    
+    if (conversationService.containsReferences(query)) {
+      console.log(`🔗 Query contains references, resolving...`);
+      referenceResolution = await conversationService.resolveReferences(
+        query,
+        userId,
+        activeSessionId
+      );
+      effectiveQuery = referenceResolution.resolvedQuery;
+      console.log(`✅ Resolved query: "${effectiveQuery}"`);
+    }
+
     // Build RAG request
     const ragRequest: RAGRequest = {
-      query,
+      query: effectiveQuery,
       userId,
       documentIds,
       maxResults: maxResults || 10,
       responseStyle: responseStyle || 'detailed'
     };
 
-    // Process the query
+    // Process the query with conversational RAG
     const startTime = Date.now();
-    const ragResponse = await ragService.processQuery(ragRequest);
+    const ragResponse = await conversationalRAGService.processConversationalQuery(ragRequest);
     const processingTime = Date.now() - startTime;
 
     console.log(`✅ Query processed in ${processingTime}ms`);
     console.log(`   Sources: ${ragResponse.sources.length}`);
     console.log(`   Confidence: ${(ragResponse.confidence * 100).toFixed(1)}%`);
 
-    // Enhance response with additional metadata
+    // Enhance response with conversational elements and metadata
     const enhancedResponse = {
       ...ragResponse,
       query: {
         text: query,
+        originalQuery: query,
+        resolvedQuery: effectiveQuery,
         userId,
         documentIds,
         responseStyle
+      },
+      conversation: {
+        sessionId: activeSessionId,
+        hasReferences: referenceResolution !== null,
+        referenceResolution: referenceResolution ? {
+          detectedReferences: referenceResolution.detectedReferences,
+          needsContext: referenceResolution.needsContext
+        } : null,
+        // Add conversational elements
+        conversationalElements: ragResponse.conversationalElements,
+        intent: ragResponse.intent,
+        conversationFlow: ragResponse.conversationFlow
       },
       metadata: {
         ...ragResponse.metadata,
@@ -115,6 +170,131 @@ router.post('/process',
     res.json(successResponse(
       enhancedResponse,
       'Query processed successfully'
+    ));
+  })
+);
+
+/**
+ * Process a conversational query with enhanced understanding
+ * POST /api/queries/conversational
+ */
+router.post('/conversational',
+  validators.ragQuery,
+  validators.queryRateLimit,
+  asyncHandler(async (req: Request, res: Response) => {
+    // Initialize services if not already done
+    if (!conversationalRAGService) {
+      await initializeServices();
+    }
+
+    const { 
+      query, 
+      userId, 
+      documentIds, 
+      maxResults, 
+      responseStyle, 
+      sessionId,
+      enableIntentAnalysis = true,
+      enableFollowUps = true,
+      responseStyle: conversationalStyle = 'adaptive'
+    } = req.body;
+
+    console.log(`💬 Processing conversational query for user: ${userId}`);
+    console.log(`   Query: "${query}"`);
+    console.log(`   Session: ${sessionId || 'new session'}`);
+    console.log(`   Style: ${conversationalStyle}`);
+
+    // Verify user has access to requested documents
+    if (documentIds && documentIds.length > 0) {
+      await verifyDocumentAccess(userId, documentIds);
+    }
+
+    // Build conversational RAG request
+    const ragRequest: RAGRequest = {
+      query,
+      userId,
+      documentIds,
+      maxResults: maxResults || 10,
+      responseStyle: responseStyle || 'detailed',
+      sessionId
+    };
+
+    // Process with conversational RAG service
+    const startTime = Date.now();
+    const conversationalResponse = await conversationalRAGService.processConversationalQuery(ragRequest);
+    const processingTime = Date.now() - startTime;
+
+    console.log(`✅ Conversational query processed in ${processingTime}ms`);
+    console.log(`   Intent: ${conversationalResponse.intent.primaryIntent}`);
+    console.log(`   Follow-ups: ${conversationalResponse.conversationalElements.followUpQuestions?.length || 0}`);
+
+    res.json(successResponse(
+      {
+        ...conversationalResponse,
+        metadata: {
+          ...conversationalResponse.metadata,
+          apiProcessingTime: processingTime,
+          requestId: req.headers['x-request-id'],
+          timestamp: new Date().toISOString()
+        }
+      },
+      'Conversational query processed successfully'
+    ));
+  })
+);
+
+/**
+ * Get conversation history for a session
+ * GET /api/queries/conversation/:sessionId
+ */
+router.get('/conversation/:sessionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!conversationService) {
+      await initializeServices();
+    }
+
+    const { sessionId } = req.params;
+    const { userId } = req.query;
+
+    if (!userId) {
+      throw new ValidationError('userId query parameter is required');
+    }
+
+    console.log(`💬 Fetching conversation history: ${sessionId}`);
+
+    const history = conversationService.getHistory(userId as string, sessionId);
+    const stats = conversationService.getSessionStats(sessionId);
+
+    res.json(successResponse(
+      {
+        sessionId,
+        messages: history,
+        stats
+      },
+      'Conversation history retrieved'
+    ));
+  })
+);
+
+/**
+ * Clear conversation session
+ * DELETE /api/queries/conversation/:sessionId
+ */
+router.delete('/conversation/:sessionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!conversationService) {
+      await initializeServices();
+    }
+
+    const { sessionId } = req.params;
+
+    console.log(`🗑️  Clearing conversation: ${sessionId}`);
+
+    conversationService.clearSession(sessionId);
+
+    res.json(successResponse(
+      { sessionId },
+      'Conversation cleared'
     ));
   })
 );
@@ -137,7 +317,11 @@ router.get('/history',
 
     console.log(`📚 Fetching query history for user: ${userId}`);
 
-    const db = DatabaseClient.getInstance().getClient();
+    if (!databaseClient) {
+      await initializeServices();
+    }
+
+    const db = databaseClient.getClient();
 
     let query = (db as any)
       .from('user_queries')
@@ -174,8 +358,8 @@ router.get('/history',
     let avgProcessingTime = 0;
 
     if (data && data.length > 0) {
-      avgConfidence = data.reduce((sum, q) => sum + (q.confidence_score || 0), 0) / data.length;
-      avgProcessingTime = data.reduce((sum, q) => sum + (q.processing_time_ms || 0), 0) / data.length;
+      avgConfidence = data.reduce((sum: number, q: any) => sum + (q.confidence_score || 0), 0) / data.length;
+      avgProcessingTime = data.reduce((sum: number, q: any) => sum + (q.processing_time_ms || 0), 0) / data.length;
     }
 
     const { count: totalCount } = await (db as any)
@@ -221,7 +405,11 @@ router.get('/:queryId',
 
     console.log(`🔍 Fetching query details: ${queryId}`);
 
-    const db = DatabaseClient.getInstance().getClient();
+    if (!databaseClient) {
+      await initializeServices();
+    }
+
+    const db = databaseClient.getClient();
 
     const { data, error } = await (db as any)
       .from('user_queries')
@@ -259,7 +447,11 @@ router.get('/analytics/summary',
 
     console.log(`📊 Generating query analytics for user: ${userId} (${timeframe})`);
 
-    const db = DatabaseClient.getInstance().getClient();
+    if (!databaseClient) {
+      await initializeServices();
+    }
+
+    const db = databaseClient.getClient();
 
     // Calculate date range based on timeframe
     const now = new Date();
@@ -356,7 +548,11 @@ router.get('/suggestions/similar',
 
     console.log(`🔎 Finding similar queries for: "${queryText}"`);
 
-    const db = DatabaseClient.getInstance().getClient();
+    if (!databaseClient) {
+      await initializeServices();
+    }
+
+    const db = databaseClient.getClient();
 
     // Simple text similarity search using PostgreSQL
     // In production, could use vector similarity on query embeddings
@@ -397,7 +593,11 @@ router.post('/:queryId/reprocess',
 
     console.log(`🔄 Reprocessing query: ${queryId}`);
 
-    const db = DatabaseClient.getInstance().getClient();
+    if (!databaseClient) {
+      await initializeServices();
+    }
+
+    const db = databaseClient.getClient();
 
     // Get original query
     const { data: originalQuery, error } = await (db as any)
@@ -438,7 +638,12 @@ router.post('/:queryId/reprocess',
  * Helper function to verify user has access to requested documents
  */
 async function verifyDocumentAccess(userId: string, documentIds: string[]): Promise<void> {
-  const db = DatabaseClient.getInstance().getClient();
+  if (!databaseClient) {
+    const { DatabaseClient } = await import('../config/database');
+    databaseClient = DatabaseClient.getInstance();
+  }
+  
+  const db = databaseClient.getClient();
 
   const { data, error } = await (db as any)
     .from('user_documents')
